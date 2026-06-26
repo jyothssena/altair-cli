@@ -5,28 +5,42 @@ import time
 from .colors import C
 from .config import MAX_RETRIES
 from .ollama import call_ollama
-from .prompts import PASS_CONFIG
+from .prompts import PASS_CONFIG, SYNTHESIS_PROMPTS
 from .scoring import SCORERS
 from .preanalysis import DiffMetadata
 
 
-def run_pass(pass_name: str, model: str, diff_text: str, metadata_ctx: str) -> dict:
-    """Execute a single analysis pass."""
+def run_pass(pass_name: str, model: str, chunks: list, metadata_ctx: str) -> dict:
+    """Execute a single analysis pass, calling Gemma once per diff chunk then synthesizing."""
     config = PASS_CONFIG[pass_name]
-    user_content = f"{metadata_ctx}\n\n[DIFF]\n{diff_text}\n[END DIFF]"
-
     result = {"name": pass_name, "label": config["label"], "output": None, "confidence": None}
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        output = call_ollama(model, config["prompt"], user_content)
-        score, label, color = SCORERS[pass_name](output)
+    # Step 1: one call per chunk
+    chunk_outputs = []
+    for chunk in chunks:
+        user_content = f"{metadata_ctx}\n\n[DIFF]\n{chunk}\n[END DIFF]"
+        for attempt in range(1, MAX_RETRIES + 1):
+            output = call_ollama(model, config["prompt"], user_content)
+            score, _, _ = SCORERS[pass_name](output)
+            if score >= 5 or attempt == MAX_RETRIES:
+                chunk_outputs.append(output.strip())
+                break
+            time.sleep(0.5)
 
-        if score >= 5 or attempt == MAX_RETRIES:
-            result["output"] = output.strip()
-            result["confidence"] = (score, label, color)
-            break
-        time.sleep(0.5)
+    # Step 2: synthesize all chunk outputs into one final result
+    if len(chunk_outputs) == 1:
+        final_output = chunk_outputs[0]
+    else:
+        numbered = "\n\n".join(
+            f"[File {i+1}: {chunks[i]['file']}]\n{out}"
+            for i, out in enumerate(chunk_outputs)
+        )
+        synthesis_user = f"Merge these {len(chunk_outputs)} outputs into one:\n\n{numbered}"
+        final_output = call_ollama(model, SYNTHESIS_PROMPTS[pass_name], synthesis_user)
 
+    score, label, color = SCORERS[pass_name](final_output)
+    result["output"] = final_output.strip()
+    result["confidence"] = (score, label, color)
     return result
 
 
