@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -33,9 +34,11 @@ def run_batch(range_spec: str, model: str, output_file: Optional[str]):
     print(f"  Found {C.BOLD}{len(commits)}{C.RESET} commits\n")
 
     all_entries = []
+    start_time = time.time()
     for i, commit_line in enumerate(commits, 1):
         sha = commit_line.split()[0]
-        print(f"  [{i}/{len(commits)}] Processing {C.DIM}{sha}{C.RESET} ... ", end="", flush=True)
+        msg_preview = " ".join(commit_line.split()[1:])[:40]
+        print(f"  [{i}/{len(commits)}] {C.DIM}{sha}{C.RESET} {msg_preview}... ", end="", flush=True)
 
         try:
             diff_result = subprocess.run(
@@ -62,9 +65,14 @@ def run_batch(range_spec: str, model: str, output_file: Optional[str]):
         meta = analyze_diff(diff_text)
         metadata_ctx = format_metadata_context(meta)
 
+        entry_start = time.time()
         output = call_ollama(model, PROMPT_CHANGELOG, f"{metadata_ctx}\n\n[DIFF]\n{diff_text}\n[END DIFF]")
+        elapsed = time.time() - entry_start
         all_entries.append(output.strip())
-        print(f"{C.GREEN}done{C.RESET}")
+        print(f"{C.GREEN}done{C.RESET} {C.DIM}({elapsed:.1f}s){C.RESET}")
+
+    total_time = time.time() - start_time
+    print(f"\n  Processed {len(all_entries)} commits in {total_time:.1f}s")
 
     release_notes = f"# Release Notes\n\nGenerated from: `{range_spec}`\n\n"
     release_notes += "## [Unreleased]\n\n"
