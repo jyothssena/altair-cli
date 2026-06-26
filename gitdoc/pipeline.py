@@ -18,7 +18,7 @@ def run_pass(pass_name: str, model: str, chunks: list, metadata_ctx: str) -> dic
     # Step 1: one call per chunk
     chunk_outputs = []
     for chunk in chunks:
-        user_content = f"{metadata_ctx}\n\n[DIFF]\n{chunk['content']}\n[END DIFF]"
+        user_content = f"{metadata_ctx}\n\n[DIFF]\n{chunk}\n[END DIFF]"
         for attempt in range(1, MAX_RETRIES + 1):
             output = call_ollama(model, config["prompt"], user_content)
             score, _, _ = SCORERS[pass_name](output)
