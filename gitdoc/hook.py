@@ -15,6 +15,7 @@ HOOK_SCRIPT = '''#!/bin/sh
 COMMIT_MSG_FILE="$1"
 COMMIT_SOURCE="$2"
 
+# Only run for regular commits (not merge, squash, amend)
 if [ -n "$COMMIT_SOURCE" ]; then
     exit 0
 fi
@@ -24,13 +25,29 @@ if [ -z "$DIFF" ]; then
     exit 0
 fi
 
-echo "[GitDoc] Generating commit message..."
+# Find the script relative to the hook location
 SCRIPT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+
+if [ ! -f "$SCRIPT_DIR/gemma_ollama.py" ]; then
+    echo "[GitDoc] Warning: gemma_ollama.py not found at $SCRIPT_DIR"
+    exit 0
+fi
+
+echo "[GitDoc] Generating commit message from staged changes..."
 MSG=$(echo "$DIFF" | python3 "$SCRIPT_DIR/gemma_ollama.py" - --pass commit --no-color 2>/dev/null)
 
-if [ -n "$MSG" ] && [ "$?" -eq 0 ]; then
+if [ -n "$MSG" ] && [ $? -eq 0 ]; then
+    # Prepend generated message, keep any existing content as comment
+    EXISTING=$(cat "$COMMIT_MSG_FILE")
     echo "$MSG" > "$COMMIT_MSG_FILE"
-    echo "[GitDoc] Commit message generated. Edit if needed."
+    if [ -n "$EXISTING" ]; then
+        echo "" >> "$COMMIT_MSG_FILE"
+        echo "# Original message:" >> "$COMMIT_MSG_FILE"
+        echo "# $EXISTING" >> "$COMMIT_MSG_FILE"
+    fi
+    echo "[GitDoc] Done. Edit the message or save to accept."
+else
+    echo "[GitDoc] Could not generate message. Write your own."
 fi
 '''
 
