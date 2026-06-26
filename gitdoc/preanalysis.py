@@ -23,6 +23,29 @@ LANG_MAP = {
     ".erl": "Erlang", ".zig": "Zig", ".nim": "Nim",
 }
 
+# ── Change type signal patterns ───────────────────────────────────
+TEST_SIGNALS = [
+    "test", "spec", "_test", ".test", "tests/", "__tests__/"
+]
+
+DOCS_SIGNALS = [
+    "readme", "changelog", "contributing", "license",
+    "docs/", "documentation/", ".md", ".rst"
+]
+
+CHORE_SIGNALS = [
+    "requirements", "dockerfile", "makefile", ".env",
+    ".github/", "ci/", "scripts/", ".circleci/", "workflows/",
+    "package.json", "go.mod", "gemfile", "cargo.toml",
+    "pyproject.toml", "docker-compose"
+]
+
+FEAT_YAML_PATHS = [
+    "monitoring/", "grafana/", "dashboards/", "alerts/"
+]
+
+CHANGE_TYPE_PRIORITY = ["test", "docs", "feat", "refactor", "chore", "fix"]
+
 
 @dataclass
 class FileChange:
@@ -44,14 +67,109 @@ class DiffMetadata:
     has_config: bool = False
     has_docs: bool = False
     complexity_score: int = 0
+    complexity_label: str = "LOW"
     primary_language: str = "Unknown"
     change_type_hint: str = "unknown"
+    change_type_signals: list = field(default_factory=list)
+
+
+# ── Complexity score (swappable) ──────────────────────────────────
+def calculate_complexity(
+    total_files: int,
+    total_lines: int,
+    num_languages: int,
+    num_file_types: int
+) -> dict:
+    """
+    Placeholder complexity scorer — returns score out of 10 and label.
+    SWAP THIS FUNCTION when friend's code is ready.
+    Inputs and output contract must stay the same:
+        inputs:  total_files, total_lines, num_languages, num_file_types
+        output:  { "score": int (1-10), "label": "LOW" | "MED" | "HIGH" }
+    """
+    score = 1
+
+    if total_files >= 10:
+        score += 4
+    elif total_files >= 5:
+        score += 3
+    elif total_files >= 3:
+        score += 2
+    elif total_files >= 2:
+        score += 1
+
+    if total_lines >= 500:
+        score += 3
+    elif total_lines >= 200:
+        score += 2
+    elif total_lines >= 50:
+        score += 1
+
+    if num_languages >= 3:
+        score += 2
+    elif num_languages >= 2:
+        score += 1
+
+    if num_file_types > 2:
+        score += 1
+
+    score = min(score, 10)
+
+    if score <= 3:
+        label = "LOW"
+    elif score <= 6:
+        label = "MED"
+    else:
+        label = "HIGH"
+
+    return {"score": score, "label": label}
+
+
+# ── Change type signal detection ──────────────────────────────────
+def detect_signals_for_file(filename: str, ext: str,
+                             added: int, removed: int) -> list:
+    signals = []
+    fname = filename.lower()
+
+    if any(s in fname for s in TEST_SIGNALS):
+        signals.append("test")
+
+    if any(s in fname for s in DOCS_SIGNALS):
+        signals.append("docs")
+
+    if ext in [".yml", ".yaml"]:
+        if any(p in fname for p in FEAT_YAML_PATHS):
+            signals.append("feat")
+        else:
+            signals.append("chore")
+    elif any(s in fname for s in CHORE_SIGNALS):
+        signals.append("chore")
+
+    if removed > added * 2 and added > 0:
+        signals.append("refactor")
+
+    if added > removed * 2:
+        signals.append("feat")
+
+    if not signals:
+        signals.append("fix")
+
+    return signals
+
+
+def pick_dominant_type(all_signals: list) -> str:
+    for change_type in CHANGE_TYPE_PRIORITY:
+        if change_type in all_signals:
+            return change_type
+    return "fix"
 
 
 def analyze_diff(diff_text: str) -> DiffMetadata:
     """Pre-analyze a diff to extract structured metadata without LLM."""
     meta = DiffMetadata()
     current_file = None
+    all_signals = []
+    file_types = set()
 
     for line in diff_text.split("\n"):
         if line.startswith("diff --git"):
@@ -60,7 +178,7 @@ def analyze_diff(diff_text: str) -> DiffMetadata:
                 filepath = match.group(1)
                 ext = Path(filepath).suffix.lower()
                 lang = LANG_MAP.get(ext, "Unknown")
-                is_test = any(t in filepath.lower() for t in ["test", "spec", "_test", "test_"])
+                is_test = any(t in filepath.lower() for t in TEST_SIGNALS)
                 current_file = FileChange(
                     path=filepath,
                     status="modified",
@@ -69,6 +187,8 @@ def analyze_diff(diff_text: str) -> DiffMetadata:
                 )
                 meta.files.append(current_file)
                 meta.languages.add(lang)
+                file_types.add(ext)
+
                 if is_test:
                     meta.has_tests = True
                 if ext in (".yml", ".yaml", ".toml", ".json", ".cfg", ".ini"):
@@ -94,19 +214,34 @@ def analyze_diff(diff_text: str) -> DiffMetadata:
                 current_file.deletions += 1
                 meta.total_deletions += 1
 
-    num_files = len(meta.files)
-    total_changes = meta.total_additions + meta.total_deletions
-    if num_files <= 1 and total_changes < 20:
-        meta.complexity_score = 2
-    elif num_files <= 3 and total_changes < 100:
-        meta.complexity_score = 4
-    elif num_files <= 5 and total_changes < 300:
-        meta.complexity_score = 6
-    elif num_files <= 10:
-        meta.complexity_score = 8
-    else:
-        meta.complexity_score = 10
+    # collect signals per file
+    for f in meta.files:
+        ext = Path(f.path).suffix.lower()
+        signals = detect_signals_for_file(f.path, ext, f.additions, f.deletions)
+        all_signals.extend(signals)
 
+    # deduplicate signals preserving order
+    seen = set()
+    unique_signals = []
+    for s in all_signals:
+        if s not in seen:
+            seen.add(s)
+            unique_signals.append(s)
+
+    meta.change_type_signals = unique_signals
+    meta.change_type_hint = pick_dominant_type(unique_signals)
+
+    # complexity scoring
+    complexity = calculate_complexity(
+        total_files=len(meta.files),
+        total_lines=meta.total_additions + meta.total_deletions,
+        num_languages=len(meta.languages - {"Unknown"}),
+        num_file_types=len(file_types)
+    )
+    meta.complexity_score = complexity["score"]
+    meta.complexity_label = complexity["label"]
+
+    # primary language by most changed lines
     if meta.languages - {"Unknown"}:
         lang_counts = {}
         for f in meta.files:
@@ -114,19 +249,6 @@ def analyze_diff(diff_text: str) -> DiffMetadata:
                 lang_counts[f.language] = lang_counts.get(f.language, 0) + f.additions + f.deletions
         if lang_counts:
             meta.primary_language = max(lang_counts, key=lang_counts.get)
-
-    if all(f.status == "added" for f in meta.files):
-        meta.change_type_hint = "new feature"
-    elif meta.has_tests and not any(not f.is_test for f in meta.files):
-        meta.change_type_hint = "test addition"
-    elif meta.has_docs and len(meta.files) == 1:
-        meta.change_type_hint = "documentation"
-    elif meta.total_deletions > meta.total_additions * 2:
-        meta.change_type_hint = "refactor/removal"
-    elif any("fix" in f.path.lower() or "bug" in f.path.lower() for f in meta.files):
-        meta.change_type_hint = "bug fix"
-    else:
-        meta.change_type_hint = "enhancement"
 
     return meta
 
@@ -138,8 +260,9 @@ def format_metadata_context(meta: DiffMetadata) -> str:
     lines.append(f"Additions: +{meta.total_additions} | Deletions: -{meta.total_deletions}")
     lines.append(f"Languages: {', '.join(sorted(meta.languages - {'Unknown'})) or 'Unknown'}")
     lines.append(f"Primary language: {meta.primary_language}")
-    lines.append(f"Complexity: {meta.complexity_score}/10")
+    lines.append(f"Complexity: {meta.complexity_score}/10 ({meta.complexity_label})")
     lines.append(f"Change type hint: {meta.change_type_hint}")
+    lines.append(f"Change type signals: {', '.join(meta.change_type_signals)}")
     lines.append(f"Includes tests: {'Yes' if meta.has_tests else 'No'}")
     lines.append(f"Includes config: {'Yes' if meta.has_config else 'No'}")
     lines.append("")
