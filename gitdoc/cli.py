@@ -17,13 +17,25 @@ from .hook import install_hook
 
 def read_diff(input_path: str) -> str:
     if input_path == "-":
+        if sys.stdin.isatty():
+            sys.exit(f"{C.RED}Error:{C.RESET} No input piped to stdin. Usage: git diff | python gemma_ollama.py -")
         content = sys.stdin.read()
     else:
         path = Path(input_path)
         if not path.exists():
             sys.exit(f"{C.RED}Error:{C.RESET} File not found: {input_path}")
+        if not path.is_file():
+            sys.exit(f"{C.RED}Error:{C.RESET} Not a file: {input_path}")
         if path.stat().st_size == 0:
             sys.exit(f"{C.RED}Error:{C.RESET} File is empty: {input_path}")
+        if path.stat().st_size > 10_000_000:
+            sys.exit(f"{C.RED}Error:{C.RESET} File too large (>10MB): {input_path}")
+
+        # Check for binary content
+        raw = path.read_bytes()[:1024]
+        if b'\x00' in raw:
+            sys.exit(f"{C.RED}Error:{C.RESET} File appears to be binary: {input_path}")
+
         content = path.read_text(encoding="utf-8", errors="replace")
 
     if not content.strip():
@@ -56,6 +68,7 @@ Examples:
     parser.add_argument("--install-hook", action="store_true", help="Install prepare-commit-msg git hook")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     parser.add_argument("--json", action="store_true", help="Output as JSON (for scripting)")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Show debug info (metadata, timing)")
     return parser.parse_args()
 
 
@@ -81,6 +94,11 @@ def main():
     meta = analyze_diff(diff_text)
     metadata_ctx = format_metadata_context(meta)
 
+    if args.verbose and not args.json:
+        print(f"\n{C.DIM}[DEBUG] Metadata context:{C.RESET}")
+        print(f"{C.DIM}{metadata_ctx}{C.RESET}\n")
+        print(f"{C.DIM}[DEBUG] Diff size: {len(diff_text)} chars{C.RESET}\n")
+
     if args.pass_name == "all":
         passes = ["commit", "changelog", "review", "pr"]
     else:
@@ -97,7 +115,15 @@ def main():
             config = PASS_CONFIG[pass_name]
             print(f"  {C.DIM}[{i}/{len(passes)}]{C.RESET} {config['label']}...", end="", flush=True)
 
-        result = run_pass(pass_name, args.model, diff_text, metadata_ctx)
+        try:
+            result = run_pass(pass_name, args.model, diff_text, metadata_ctx)
+        except Exception as e:
+            result = {
+                "name": pass_name,
+                "label": PASS_CONFIG[pass_name]["label"],
+                "output": f"[Error: {type(e).__name__}: {e}]",
+                "confidence": (0, "FAILED", C.RED),
+            }
         results.append(result)
 
         if not args.json:

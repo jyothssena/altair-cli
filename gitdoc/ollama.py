@@ -2,6 +2,7 @@
 
 import json
 import sys
+import time
 
 import requests
 
@@ -24,15 +25,26 @@ def call_ollama(model: str, system_prompt: str, user_content: str, stream: bool 
         },
     }
 
-    try:
-        resp = requests.post(OLLAMA_URL, json=payload, stream=stream, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-    except requests.ConnectionError:
-        sys.exit(f"{C.RED}Error:{C.RESET} Cannot connect to Ollama at {OLLAMA_URL}. Run: ollama serve")
-    except requests.Timeout:
-        sys.exit(f"{C.RED}Error:{C.RESET} Request timed out ({REQUEST_TIMEOUT}s). Diff may be too large.")
-    except requests.HTTPError as e:
-        sys.exit(f"{C.RED}Error:{C.RESET} Ollama HTTP {e.response.status_code}: {e.response.text}")
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(OLLAMA_URL, json=payload, stream=stream, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            break
+        except requests.ConnectionError:
+            last_error = f"Cannot connect to Ollama at {OLLAMA_URL}. Run: ollama serve"
+            if attempt < 3:
+                time.sleep(2)
+                continue
+            sys.exit(f"{C.RED}Error:{C.RESET} {last_error}")
+        except requests.Timeout:
+            last_error = f"Request timed out ({REQUEST_TIMEOUT}s). Diff may be too large."
+            if attempt < 3:
+                time.sleep(1)
+                continue
+            sys.exit(f"{C.RED}Error:{C.RESET} {last_error}")
+        except requests.HTTPError as e:
+            sys.exit(f"{C.RED}Error:{C.RESET} Ollama HTTP {e.response.status_code}: {e.response.text}")
 
     if not stream:
         return resp.json().get("message", {}).get("content", "")
