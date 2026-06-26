@@ -80,6 +80,24 @@ RULES:
 - Testing suggestions should be actionable
 - NEVER fabricate details not in the diff"""
 
+SYNTHESIS_PROMPTS = {
+    "commit": """You are a commit message synthesizer. You will receive multiple commit messages, one per changed file.
+Merge them into a single conventional commit message that covers all changes.
+Output ONLY the final commit message, nothing else. Follow the same format rules as before.""",
+
+    "changelog": """You are a changelog synthesizer. You will receive multiple changelog entries, one per changed file.
+Merge them into a single consolidated changelog entry, deduplicating and grouping under the correct categories.
+Output ONLY the final changelog entry in Keep a Changelog format.""",
+
+    "review": """You are a code review synthesizer. You will receive multiple code review sections, one per changed file.
+Merge them into a single unified code review, deduplicating issues and ordering by severity.
+Keep the same output format with Risk Level, Issues Found, Security, and Suggestions sections.""",
+
+    "pr": """You are a PR description synthesizer. You will receive multiple PR description drafts, one per changed file.
+Merge them into a single cohesive PR description covering all changes.
+Keep the same output format with Title, Summary, Changes, Risk Assessment, Testing Suggestions, and Reviewers sections.""",
+}
+
 PASS_CONFIG = {
     "commit": {"prompt": PROMPT_COMMIT, "label": "Commit Message", "icon": ""},
     "changelog": {"prompt": PROMPT_CHANGELOG, "label": "Changelog", "icon": ""},
