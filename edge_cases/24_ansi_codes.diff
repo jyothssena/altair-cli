@@ -1,0 +1,6 @@
+diff --git a/c.py b/c.py
+--- a/c.py
++++ b/c.py
+@@ -1 +1 @@
+\x1b[31m-old = 1\x1b[0m
+\x1b[32m+new = 2\x1b[0m

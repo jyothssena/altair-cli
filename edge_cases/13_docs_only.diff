@@ -1,0 +1,17 @@
+diff --git a/README.md b/README.md
+index 4f2c891..afb344d 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,11 @@
+ # MyLib
+ 
+-A tiny library.
++A tiny, fast library.
+ 
+ ## Usage
+ 
+ Call parse().
++
++## License
++
++MIT

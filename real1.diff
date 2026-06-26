@@ -1,0 +1,101 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index 3264a25e32..450445c3e8 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -7,7 +7,7 @@ Unreleased
+ -   Require Werkzeug >= 2.3.6.
+ -   Use ``flit_core`` instead of ``setuptools`` as build backend.
+ -   Refactor how an app's root and instance paths are determined. :issue:`5160`
+-
++-   Pass positional arguments to class-based views. :issue:`5199`
+ 
+ Version 2.3.2
+ -------------
+diff --git a/src/flask/views.py b/src/flask/views.py
+index c7a2b621c8..a970a709a7 100644
+--- a/src/flask/views.py
++++ b/src/flask/views.py
+@@ -102,17 +102,17 @@ def as_view(
+         """
+         if cls.init_every_request:
+ 
+-            def view(**kwargs: t.Any) -> ft.ResponseReturnValue:
++            def view(*args: t.Any, **kwargs: t.Any) -> ft.ResponseReturnValue:
+                 self = view.view_class(  # type: ignore[attr-defined]
+                     *class_args, **class_kwargs
+                 )
+-                return current_app.ensure_sync(self.dispatch_request)(**kwargs)
++                return current_app.ensure_sync(self.dispatch_request)(*args, **kwargs)
+ 
+         else:
+             self = cls(*class_args, **class_kwargs)
+ 
+-            def view(**kwargs: t.Any) -> ft.ResponseReturnValue:
+-                return current_app.ensure_sync(self.dispatch_request)(**kwargs)
++            def view(*args: t.Any, **kwargs: t.Any) -> ft.ResponseReturnValue:
++                return current_app.ensure_sync(self.dispatch_request)(*args, **kwargs)
+ 
+         if cls.decorators:
+             view.__name__ = name
+@@ -178,7 +178,7 @@ def __init_subclass__(cls, **kwargs: t.Any) -> None:
+             if methods:
+                 cls.methods = methods
+ 
+-    def dispatch_request(self, **kwargs: t.Any) -> ft.ResponseReturnValue:
++    def dispatch_request(self, *args: t.Any, **kwargs: t.Any) -> ft.ResponseReturnValue:
+         meth = getattr(self, request.method.lower(), None)
+ 
+         # If the request method is HEAD and we don't have a handler for it
+@@ -187,4 +187,4 @@ def dispatch_request(self, **kwargs: t.Any) -> ft.ResponseReturnValue:
+             meth = getattr(self, "get", None)
+ 
+         assert meth is not None, f"Unimplemented method {request.method!r}"
+-        return current_app.ensure_sync(meth)(**kwargs)
++        return current_app.ensure_sync(meth)(*args, **kwargs)
+diff --git a/tests/test_views.py b/tests/test_views.py
+index 8d870def21..f421ee3085 100644
+--- a/tests/test_views.py
++++ b/tests/test_views.py
+@@ -98,6 +98,42 @@ def dispatch_request(self):
+     assert rv.data == b"Awesome"
+ 
+ 
++def test_view_decorators_with_injected_args(app, client):
++    def add_arg(f):
++        def new_function(*args, **kwargs):
++            return f("Awesome", *args, **kwargs)
++
++        return new_function
++
++    class Index(flask.views.View):
++        decorators = [add_arg]
++
++        def dispatch_request(self, arg):
++            return arg
++
++    app.add_url_rule("/", view_func=Index.as_view("index"))
++    rv = client.get("/")
++    assert rv.data == b"Awesome"
++
++
++def test_method_based_view_decorators_with_injected_args(app, client):
++    def add_arg(f):
++        def new_function(*args, **kwargs):
++            return f("Awesome", *args, **kwargs)
++
++        return new_function
++
++    class Index(flask.views.MethodView):
++        decorators = [add_arg]
++
++        def post(self, arg):
++            return arg
++
++    app.add_url_rule("/", view_func=Index.as_view("index"))
++    rv = client.post("/")
++    assert rv.data == b"Awesome"
++
++
+ def test_view_provide_automatic_options_attr():
+     app = flask.Flask(__name__)
+ 

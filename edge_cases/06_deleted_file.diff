@@ -1,0 +1,8 @@
+diff --git a/src/legacy.py b/src/legacy.py
+deleted file mode 100644
+index 4c8b581..0000000
+--- a/src/legacy.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-def helper():
+-    return 1
