@@ -44,7 +44,15 @@ def run_batch(range_spec: str, model: str, output_file: Optional[str]):
             )
             diff_text = diff_result.stdout
         except subprocess.CalledProcessError:
-            diff_text = ""
+            # First commit or orphan — try git show
+            try:
+                diff_result = subprocess.run(
+                    ["git", "show", sha, "--format=", "--patch"],
+                    capture_output=True, text=True, check=True,
+                )
+                diff_text = diff_result.stdout
+            except subprocess.CalledProcessError:
+                diff_text = ""
 
         if not diff_text.strip():
             print(f"{C.DIM}(empty diff, skipped){C.RESET}")
