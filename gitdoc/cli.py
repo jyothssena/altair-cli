@@ -122,7 +122,11 @@ def main():
                 for r in results
             },
         }
-        output_str = json.dumps(json_output, indent=2)
+        try:
+            output_str = json.dumps(json_output, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            sys.exit(f"{C.RED}Error:{C.RESET} Failed to serialize JSON: {e}")
+
         if args.output:
             Path(args.output).write_text(output_str, encoding="utf-8")
         else:
