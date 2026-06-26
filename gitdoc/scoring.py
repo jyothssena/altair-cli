@@ -62,26 +62,46 @@ def score_changelog(text: str) -> tuple:
 def score_review(text: str) -> tuple:
     if not text or not text.strip():
         return 0, "FAILED", C.RED
-    has_risk = "Risk Level:" in text or "**Risk Level:**" in text
-    has_structure = "Issues" in text or "Suggestions" in text or "Security" in text
-    if has_risk and has_structure:
+
+    clean = text.strip()
+    has_risk = bool(re.search(r"\*{0,2}Risk Level:?\*{0,2}\s*(HIGH|MEDIUM|LOW)", clean))
+    has_issues = "Issues" in clean or "issues" in clean
+    has_security = "Security" in clean or "security" in clean
+    has_suggestions = "Suggestion" in clean or "suggestion" in clean
+
+    structure_count = sum([has_issues, has_security, has_suggestions])
+
+    if has_risk and structure_count >= 2:
         return 10, "HIGH", C.GREEN
-    if has_structure:
+    if has_risk or structure_count >= 2:
         return 6, "MEDIUM", C.YELLOW
-    return 3, "LOW", C.RED
+    if structure_count >= 1:
+        return 4, "LOW", C.RED
+    return 2, "LOW", C.RED
+
 
 
 def score_pr(text: str) -> tuple:
     if not text or not text.strip():
         return 0, "FAILED", C.RED
-    has_title = "Title:" in text or "**Title:**" in text
-    has_summary = "Summary:" in text or "**Summary:**" in text
-    has_risk = "Risk Assessment:" in text or "**Risk Assessment:**" in text
-    if has_title and has_summary and has_risk:
+
+    clean = text.strip()
+    has_title = bool(re.search(r"\*{0,2}Title:?\*{0,2}", clean))
+    has_summary = bool(re.search(r"\*{0,2}Summary:?\*{0,2}", clean))
+    has_risk = bool(re.search(r"\*{0,2}Risk Assessment:?\*{0,2}\s*(HIGH|MEDIUM|LOW)", clean))
+    has_changes = "Changes:" in clean or "**Changes:**" in clean
+    has_testing = "Testing" in clean or "testing" in clean
+
+    score_count = sum([has_title, has_summary, has_risk, has_changes, has_testing])
+
+    if score_count >= 4:
         return 10, "HIGH", C.GREEN
-    if has_title and has_summary:
+    if score_count >= 3:
         return 7, "MEDIUM", C.YELLOW
-    return 3, "LOW", C.RED
+    if score_count >= 1:
+        return 4, "LOW", C.RED
+    return 1, "FAILED", C.RED
+
 
 
 SCORERS = {
