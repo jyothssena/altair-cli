@@ -1,0 +1,9 @@
+diff --git a/src/parser.py b/src/parser.py
+index f5450a7..0777f41 100644
+--- a/src/parser.py
++++ b/src/parser.py
+@@ -1,2 +1,2 @@
+ def parse(data):
+-    return int(data)
++    return int(data)  # tweak
+\ No newline at end of file

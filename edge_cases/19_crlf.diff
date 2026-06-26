@@ -1,0 +1,7 @@
+diff --git a/win.py b/win.py
+index 111..222 100644
+--- a/win.py
++++ b/win.py
+@@ -1 +1,2 @@
+ def go():
++    return 1

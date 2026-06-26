@@ -1,0 +1,12 @@
+diff --git a/src/parser.py b/src/parser.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/parser.py
++++ b/src/parser.py
+@@ -1,2 +1,8 @@
+ def parse(data):
+-    return int(data)
++<<<<<<< HEAD
++    return int(data, 10)
++=======
++    return int(data, base=16)
++>>>>>>> feature-branch

@@ -1,0 +1,7 @@
+diff --git a/weird dir/my file (v2).py b/weird dir/my file (v2).py
+new file mode 100644
+index 0000000..bafc5d9
+--- /dev/null
++++ b/weird dir/my file (v2).py	
+@@ -0,0 +1 @@
++x=1

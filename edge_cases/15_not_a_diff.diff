@@ -1,0 +1,4 @@
+import os
+def hello():
+    print("this is just a python file, not a diff at all")
+    return 42

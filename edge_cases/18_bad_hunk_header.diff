@@ -1,0 +1,6 @@
+diff --git a/x.py b/x.py
+--- a/x.py
++++ b/x.py
+@@ this is not a valid hunk header @@
++added = True
+-removed = False

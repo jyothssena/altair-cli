@@ -1,0 +1,8 @@
+diff --git "a/src/caf\303\251_n\303\272\303\261ez.py" "b/src/caf\303\251_n\303\272\303\261ez.py"
+new file mode 100644
+index 0000000..e04f686
+--- /dev/null
++++ "b/src/caf\303\251_n\303\272\303\261ez.py"
+@@ -0,0 +1,2 @@
++def saludar():
++    return "hola 👋 café"

@@ -1,0 +1,38 @@
+diff --git a/README.md b/README.md
+index 4f2c891..51e246a 100644
+--- a/README.md
++++ b/README.md
+@@ -4,4 +4,4 @@ A tiny library.
+ 
+ ## Usage
+ 
+-Call parse().
++Call parse() with an optional base.
+diff --git a/src/api.py b/src/api.py
+index ed610fa..3e2ca10 100644
+--- a/src/api.py
++++ b/src/api.py
+@@ -1,2 +1,2 @@
+-def view(self, **kwargs):
+-    return kwargs
++def view(self, *args, **kwargs):
++    return (args, kwargs)
+diff --git a/src/parser.py b/src/parser.py
+index f5450a7..53b50c7 100644
+--- a/src/parser.py
++++ b/src/parser.py
+@@ -1,2 +1,2 @@
+-def parse(data):
+-    return int(data)
++def parse(data, base=10):
++    return int(data, base)
+diff --git a/tests/test_parser.py b/tests/test_parser.py
+index 3a5e623..f714b5f 100644
+--- a/tests/test_parser.py
++++ b/tests/test_parser.py
+@@ -1,4 +1,4 @@
+ import parser
+ 
+ def test_parse():
+-    assert parser.parse("3") == 3
++    assert parser.parse("ff", 16) == 255

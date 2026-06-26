@@ -1,0 +1,8 @@
+diff --git a/big.py b/big.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/big.py
++++ b/big.py
+@@ -1,50 +1,80 @@
+ def process(data):
+-    result = transform(data)
++    result = transform(data, strict=Tr

@@ -1,0 +1,9 @@
+diff --git a/src/mathutils.py b/src/mathutils.py
+new file mode 100644
+index 0000000..65d3d9a
+--- /dev/null
++++ b/src/mathutils.py
+@@ -0,0 +1,3 @@
++def safe_div(a, b):
++    """Divide, return None on zero."""
++    return None if b == 0 else a / b
