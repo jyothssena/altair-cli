@@ -1,0 +1,43 @@
+diff --git a/app/auth/middleware.py b/app/auth/middleware.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/app/auth/middleware.py
++++ b/app/auth/middleware.py
+@@ -12,6 +12,7 @@ from flask import request, g, abort
+ from functools import wraps
+ from datetime import datetime, timedelta
+ import jwt
++import logging
+ 
+ from app.models.user import User
+ from app.config import SECRET_KEY, TOKEN_EXPIRY
+@@ -22,15 +23,24 @@ EXEMPT_ROUTES = [
+     "/api/v1/health",
+ ]
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ def require_auth(f):
+     @wraps(f)
+     def decorated(*args, **kwargs):
+         token = request.headers.get("Authorization", "").replace("Bearer ", "")
+-        if not token:
+-            abort(401)
++        if not token or not token.strip():
++            logger.warning("Auth attempt with empty token from %s", request.remote_addr)
++            abort(401, description="Missing authentication token")
+         try:
+             payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
++            if payload.get("exp") and datetime.utcnow().timestamp() > payload["exp"]:
++                logger.info("Expired token used by user_id=%s", payload.get("sub"))
++                abort(401, description="Token has expired")
+             g.current_user = User.query.get(payload["sub"])
++            if g.current_user is None:
++                logger.error("Token references non-existent user_id=%s", payload["sub"])
++                abort(401, description="User not found")
+         except jwt.InvalidTokenError as e:
+-            abort(401)
++            logger.warning("Invalid token: %s", str(e))
++            abort(401, description="Invalid authentication token")
+         return f(*args, **kwargs)
+     return decorated

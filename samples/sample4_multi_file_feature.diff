@@ -1,0 +1,113 @@
+diff --git a/api/routes/users.py b/api/routes/users.py
+index a1b2c3d..d4e5f6a 100644
+--- a/api/routes/users.py
++++ b/api/routes/users.py
+@@ -1,7 +1,7 @@
+ from flask import Blueprint, request, jsonify
+-from api.models import User
++from api.models import User, UserProfile
+ from api.auth import require_auth
+-from api.validators import validate_email
++from api.validators import validate_email, validate_username
+ 
+ users_bp = Blueprint("users", __name__, url_prefix="/api/v1/users")
+ 
+@@ -15,6 +15,25 @@ def get_user(user_id):
+     return jsonify(user.to_dict())
+ 
+ 
++@users_bp.route("/<int:user_id>/profile", methods=["PUT"])
++@require_auth
++def update_profile(user_id):
++    """Update user profile with validated fields."""
++    data = request.get_json()
++    if not data:
++        return jsonify({"error": "Request body required"}), 400
++
++    if "username" in data:
++        if not validate_username(data["username"]):
++            return jsonify({"error": "Invalid username format"}), 422
++
++    profile = UserProfile.query.filter_by(user_id=user_id).first_or_404()
++    profile.update_from_dict(data)
++    db.session.commit()
++
++    return jsonify(profile.to_dict()), 200
++
++
+ @users_bp.route("/", methods=["POST"])
+ @require_auth
+ def create_user():
+diff --git a/api/models/user_profile.py b/api/models/user_profile.py
+new file mode 100644
+index 0000000..b1c2d3e
+--- /dev/null
++++ b/api/models/user_profile.py
+@@ -0,0 +1,32 @@
++from datetime import datetime
++from api.extensions import db
++
++
++class UserProfile(db.Model):
++    __tablename__ = "user_profiles"
++
++    id = db.Column(db.Integer, primary_key=True)
++    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), unique=True, nullable=False)
++    bio = db.Column(db.Text, default="")
++    avatar_url = db.Column(db.String(512))
++    location = db.Column(db.String(128))
++    website = db.Column(db.String(256))
++    created_at = db.Column(db.DateTime, default=datetime.utcnow)
++    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
++
++    user = db.relationship("User", backref=db.backref("profile", uselist=False))
++
++    def update_from_dict(self, data: dict) -> None:
++        allowed = {"bio", "avatar_url", "location", "website"}
++        for key, value in data.items():
++            if key in allowed:
++                setattr(self, key, value)
++
++    def to_dict(self) -> dict:
++        return {
++            "user_id": self.user_id,
++            "bio": self.bio,
++            "avatar_url": self.avatar_url,
++            "location": self.location,
++            "website": self.website,
++            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
++        }
+diff --git a/tests/test_user_profile.py b/tests/test_user_profile.py
+new file mode 100644
+index 0000000..c1d2e3f
+--- /dev/null
++++ b/tests/test_user_profile.py
+@@ -0,0 +1,28 @@
++import pytest
++from api.models.user_profile import UserProfile
++
++
++class TestUserProfile:
++    def test_update_from_dict_allowed_fields(self, profile):
++        profile.update_from_dict({"bio": "Hello", "location": "NYC"})
++        assert profile.bio == "Hello"
++        assert profile.location == "NYC"
++
++    def test_update_from_dict_ignores_disallowed(self, profile):
++        profile.update_from_dict({"id": 999, "user_id": 999})
++        assert profile.id != 999
++        assert profile.user_id != 999
++
++    def test_to_dict_returns_expected_keys(self, profile):
++        result = profile.to_dict()
++        expected_keys = {"user_id", "bio", "avatar_url", "location", "website", "updated_at"}
++        assert set(result.keys()) == expected_keys
++
++    def test_update_profile_endpoint(self, client, auth_headers):
++        resp = client.put(
++            "/api/v1/users/1/profile",
++            json={"bio": "Updated bio"},
++            headers=auth_headers,
++        )
++        assert resp.status_code == 200
++        assert resp.json["bio"] == "Updated bio"

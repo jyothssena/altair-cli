@@ -1,0 +1,28 @@
+diff --git a/src/parser/json_parser.py b/src/parser/json_parser.py
+index 3a4b5c6..7d8e9f0 100644
+--- a/src/parser/json_parser.py
++++ b/src/parser/json_parser.py
+@@ -45,8 +45,12 @@ class JsonParser:
+     def parse(self, raw_input: str) -> dict:
+         """Parse raw JSON string into a validated dictionary."""
+-        data = json.loads(raw_input)
+-        return self._validate(data)
++        if raw_input is None:
++            raise ValueError("Cannot parse None input")
++        try:
++            data = json.loads(raw_input)
++        except json.JSONDecodeError as e:
++            raise ParseError(f"Invalid JSON at position {e.pos}: {e.msg}") from e
++        return self._validate(data)
+ 
+     def _validate(self, data: dict) -> dict:
+@@ -60,3 +64,10 @@ class JsonParser:
+             raise ValidationError(f"Missing required field: {field}")
+         return data
++
++    def parse_file(self, filepath: str) -> dict:
++        """Parse JSON from a file path."""
++        path = Path(filepath)
++        if not path.exists():
++            raise FileNotFoundError(f"JSON file not found: {filepath}")
++        return self.parse(path.read_text(encoding="utf-8"))

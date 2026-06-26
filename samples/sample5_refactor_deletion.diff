@@ -1,0 +1,85 @@
+diff --git a/lib/legacy_logger.py b/lib/legacy_logger.py
+deleted file mode 100644
+index a1b2c3d..0000000
+--- a/lib/legacy_logger.py
++++ /dev/null
+@@ -1,85 +0,0 @@
+-"""
+-Legacy logging module - deprecated in favor of structlog.
+-"""
+-import logging
+-import sys
+-from datetime import datetime
+-
+-
+-class LegacyLogger:
+-    """Old-style logger with file rotation."""
+-
+-    _instance = None
+-
+-    def __init__(self, name="app", level=logging.DEBUG):
+-        self.logger = logging.getLogger(name)
+-        self.logger.setLevel(level)
+-        self._setup_handlers()
+-
+-    def _setup_handlers(self):
+-        fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+-        stdout_handler = logging.StreamHandler(sys.stdout)
+-        stdout_handler.setFormatter(fmt)
+-        self.logger.addHandler(stdout_handler)
+-
+-    @classmethod
+-    def get_instance(cls):
+-        if cls._instance is None:
+-            cls._instance = cls()
+-        return cls._instance
+-
+-    def info(self, msg, **kwargs):
+-        self.logger.info(msg, extra=kwargs)
+-
+-    def error(self, msg, **kwargs):
+-        self.logger.error(msg, extra=kwargs)
+-
+-    def warning(self, msg, **kwargs):
+-        self.logger.warning(msg, extra=kwargs)
+-
+-    def debug(self, msg, **kwargs):
+-        self.logger.debug(msg, extra=kwargs)
+-
+-
+-def setup_legacy_logging(app):
+-    """Wire legacy logger into Flask app."""
+-    logger = LegacyLogger.get_instance()
+-    app.logger = logger.logger
+-    return logger
+diff --git a/lib/__init__.py b/lib/__init__.py
+index d4e5f6a..7a8b9c0 100644
+--- a/lib/__init__.py
++++ b/lib/__init__.py
+@@ -1,5 +1,4 @@
+-from .legacy_logger import LegacyLogger, setup_legacy_logging
+ from .config import load_config
+ from .database import get_db
+ 
+-__all__ = ["LegacyLogger", "setup_legacy_logging", "load_config", "get_db"]
++__all__ = ["load_config", "get_db"]
+diff --git a/app.py b/app.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/app.py
++++ b/app.py
+@@ -1,12 +1,12 @@
+ from flask import Flask
+-from lib import setup_legacy_logging, load_config
++import structlog
++from lib import load_config
+ 
+ 
+ def create_app():
+     app = Flask(__name__)
+     load_config(app)
+-    setup_legacy_logging(app)
+-    app.logger.info("Application starting with legacy logger")
++    structlog.configure(processors=[structlog.dev.ConsoleRenderer()])
++    logger = structlog.get_logger()
++    logger.info("application_starting", framework="flask")
+     return app
