@@ -8,15 +8,31 @@ def score_commit(text: str) -> tuple:
     """Validate and score commit message output."""
     if not text or not text.strip():
         return 0, "FAILED", C.RED
-    first_line = text.strip().split("\n")[0]
-    pattern = r"^(feat|fix|refactor|docs|test|chore|perf)\([a-zA-Z0-9_\-./]+\): .{1,72}$"
-    if re.match(pattern, first_line):
-        if len(first_line) <= 72:
-            return 10, "HIGH", C.GREEN
+
+    # Strip any markdown fences the model might add
+    clean = text.strip()
+    if clean.startswith(" ⁠"):
+        lines = clean.split("\n")
+        clean = "\n".join(l for l in lines if not l.startswith("⁠ "))
+    
+    first_line = clean.strip().split("\n")[0].strip()
+    
+    # Strict match: type(scope): description
+    strict = r"^(feat|fix|refactor|docs|test|chore|perf)\([a-zA-Z0-9_\-./]+\): .{1,72}$"
+    if re.match(strict, first_line):
+        return 10, "HIGH", C.GREEN
+
+    # Loose match: type(scope): description (over 72 chars)
+    loose = r"^(feat|fix|refactor|docs|test|chore|perf)\([a-zA-Z0-9_\-./]+\): .+"
+    if re.match(loose, first_line):
         return 7, "MEDIUM", C.YELLOW
+
+    # Has type but missing scope or colon
     if re.match(r"^(feat|fix|refactor|docs|test|chore|perf)", first_line):
         return 5, "MEDIUM", C.YELLOW
+
     return 2, "LOW", C.RED
+
 
 
 def score_changelog(text: str) -> tuple:
