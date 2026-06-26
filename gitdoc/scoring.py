@@ -102,6 +102,27 @@ def score_pr(text: str) -> tuple:
         return 4, "LOW", C.RED
     return 1, "FAILED", C.RED
 
+def explain_score(pass_name: str, text: str) -> str:
+    """Return human-readable explanation of why a score was given."""
+    if pass_name == "commit":
+        first_line = (text or "").strip().split("\n")[0] if text else ""
+        if not first_line:
+            return "Empty output"
+        if re.match(r"^(feat|fix|refactor|docs|test|chore|perf)\(.+\): .+", first_line):
+            return f"Valid format: {first_line[:60]}"
+        return f"Missing type(scope): format. Got: {first_line[:60]}"
+
+    if pass_name == "changelog":
+        issues = []
+        if "## [Unreleased]" not in (text or ""):
+            issues.append("missing '## [Unreleased]' header")
+        if not any(f"### {c}" in (text or "") for c in ("Added", "Changed", "Fixed", "Removed", "Performance")):
+            issues.append("missing ### Category")
+        if "- " not in (text or ""):
+            issues.append("missing bullet entries")
+        return "; ".join(issues) if issues else "Valid structure"
+
+    return "Scored by section detection"
 
 
 SCORERS = {
@@ -110,3 +131,4 @@ SCORERS = {
     "review": score_review,
     "pr": score_pr,
 }
+
