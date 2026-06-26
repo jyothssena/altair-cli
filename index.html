@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Altair — The Automagic Documenter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        background: 'hsl(240 10% 3.9%)',
+                        foreground: 'hsl(0 0% 98%)',
+                        card: 'hsl(240 10% 3.9%)',
+                        'card-foreground': 'hsl(0 0% 98%)',
+                        primary: 'hsl(0 0% 98%)',
+                        'primary-foreground': 'hsl(240 5.9% 10%)',
+                        secondary: 'hsl(240 3.7% 15.9%)',
+                        'secondary-foreground': 'hsl(0 0% 98%)',
+                        muted: 'hsl(240 3.7% 15.9%)',
+                        'muted-foreground': 'hsl(240 5% 64.9%)',
+                        accent: 'hsl(240 3.7% 15.9%)',
+                        'accent-foreground': 'hsl(0 0% 98%)',
+                        border: 'hsl(240 3.7% 15.9%)',
+                        ring: 'hsl(240 4.9% 83.9%)',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        body { background: hsl(240 10% 3.9%); color: hsl(0 0% 98%); }
+        .gradient-text {
+            background: linear-gradient(135deg, #e2e8f0, #94a3b8, #e2e8f0);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .glow { box-shadow: 0 0 60px -12px rgba(148, 163, 184, 0.15); }
+        .card-hover:hover { border-color: hsl(240 5% 34%); transform: translateY(-2px); }
+        .code-block { background: hsl(240 10% 6%); border: 1px solid hsl(240 3.7% 15.9%); }
+        .badge { background: hsl(240 3.7% 15.9%); border: 1px solid hsl(240 3.7% 20%); }
+        .star-glow { animation: pulse 3s ease-in-out infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+        .pipeline-line { background: linear-gradient(180deg, hsl(240 3.7% 25%) 0%, hsl(240 3.7% 15%) 100%); }
+    </style>
+</head>
+<body class="font-sans antialiased min-h-screen">
+
+    <!-- Hero -->
+    <header class="relative overflow-hidden border-b border-border">
+        <div class="absolute inset-0 bg-gradient-to-br from-slate-900/50 via-transparent to-slate-800/30"></div>
+        <div class="relative max-w-6xl mx-auto px-6 py-24 text-center">
+            <div class="star-glow inline-block mb-6">
+                <span class="text-4xl text-slate-300 font-mono tracking-widest">&#x2736;</span>
+            </div>
+            <h1 class="text-5xl md:text-7xl font-bold tracking-tight mb-4">
+                <span class="gradient-text">Altair</span>
+            </h1>
+            <p class="text-xl md:text-2xl text-muted-foreground font-light mb-3">The Automagic Documenter</p>
+            <p class="text-sm text-muted-foreground max-w-xl mx-auto mb-8">
+                A multi-pass code intelligence pipeline that transforms raw git diffs into structured documentation using Google Gemma 3 via Ollama.
+            </p>
+            <div class="flex items-center justify-center gap-3 flex-wrap">
+                <span class="badge px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">GDG Hackathon 2026</span>
+                <span class="badge px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">Track 1: Git-to-Doc</span>
+                <span class="badge px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">Gemma 3 (4B)</span>
+                <span class="badge px-3 py-1.5 rounded-full text-xs font-medium text-muted-foreground">Local-First</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Problem / Solution -->
+    <section class="max-w-6xl mx-auto px-6 py-20">
+        <div class="grid md:grid-cols-2 gap-8">
+            <div class="rounded-xl border border-border p-8 glow">
+                <h2 class="text-xl font-semibold mb-4">The Problem</h2>
+                <p class="text-muted-foreground leading-relaxed">
+                    Developers write terrible commit messages, skip changelogs, and rarely document their code changes. Manual documentation is friction that slows teams down and makes codebases unreadable over time.
+                </p>
+            </div>
+            <div class="rounded-xl border border-border p-8 glow">
+                <h2 class="text-xl font-semibold mb-4">The Solution</h2>
+                <p class="text-muted-foreground leading-relaxed">
+                    Altair takes a raw <code class="text-sm bg-muted px-1.5 py-0.5 rounded font-mono">.diff</code> file and runs it through a 5-stage intelligent pipeline powered by Gemma 3, producing structured commit messages, changelogs, code reviews, and PR descriptions — automatically.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pipeline Architecture -->
+    <section class="max-w-6xl mx-auto px-6 py-20 border-t border-border">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl md:text-4xl font-bold mb-3">Pipeline Architecture</h2>
+            <p class="text-muted-foreground">5 stages from raw diff to structured documentation</p>
+        </div>
+
+        <div class="flex flex-col items-center gap-0">
+            <!-- Stage 1 -->
+            <div class="w-full max-w-lg rounded-xl border border-border p-6 text-center card-hover transition-all duration-200">
+                <div class="flex items-center justify-center gap-3 mb-2">
+                    <span class="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">STAGE 1</span>
+                </div>
+                <h3 class="text-lg font-semibold mb-1">Pre-Analysis Engine</h3>
+                <p class="text-sm text-muted-foreground">Pure Python metadata extraction — languages, complexity, change types. No LLM needed.</p>
+            </div>
+
+            <div class="pipeline-line w-px h-8"></div>
+
+            <!-- Stage 2 -->
+            <div class="w-full max-w-lg rounded-xl border border-border p-6 text-center card-hover transition-all duration-200">
+                <div class="flex items-center justify-center gap-3 mb-2">
+                    <span class="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">STAGE 2</span>
+                </div>
+                <h3 class="text-lg font-semibold mb-1">Smart Chunker</h3>
+                <p class="text-sm text-muted-foreground">Function-boundary splitting. Large diffs split by def/class, preserving context within model limits.</p>
+            </div>
+
+            <div class="pipeline-line w-px h-8"></div>
+
+            <!-- Stage 3 - Fan out -->
+            <div class="w-full max-w-4xl">
+                <div class="flex items-center justify-center gap-3 mb-4">
+                    <span class="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">STAGE 3</span>
+                    <span class="text-sm text-muted-foreground">Multi-Pass LLM Pipeline</span>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div class="rounded-xl border border-border p-4 text-center card-hover transition-all duration-200">
+                        <h4 class="text-sm font-semibold mb-1">Commit</h4>
+                        <p class="text-xs text-muted-foreground">Conventional Commit format</p>
+                    </div>
+                    <div class="rounded-xl border border-border p-4 text-center card-hover transition-all duration-200">
+                        <h4 class="text-sm font-semibold mb-1">Changelog</h4>
+                        <p class="text-xs text-muted-foreground">Keep a Changelog entry</p>
+                    </div>
+                    <div class="rounded-xl border border-border p-4 text-center card-hover transition-all duration-200">
+                        <h4 class="text-sm font-semibold mb-1">Review</h4>
+                        <p class="text-xs text-muted-foreground">Risk + issues + security</p>
+                    </div>
+                    <div class="rounded-xl border border-border p-4 text-center card-hover transition-all duration-200">
+                        <h4 class="text-sm font-semibold mb-1">PR Desc</h4>
+                        <p class="text-xs text-muted-foreground">Title + summary + testing</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pipeline-line w-px h-8"></div>
+
+            <!-- Stage 4 -->
+            <div class="w-full max-w-lg rounded-xl border border-border p-6 text-center card-hover transition-all duration-200">
+                <div class="flex items-center justify-center gap-3 mb-2">
+                    <span class="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">STAGE 4</span>
+                </div>
+                <h3 class="text-lg font-semibold mb-1">Confidence Scoring</h3>
+                <p class="text-sm text-muted-foreground">Validates output structure. HIGH/MEDIUM/LOW confidence. Auto-retries on failure (up to 3x).</p>
+            </div>
+
+            <div class="pipeline-line w-px h-8"></div>
+
+            <!-- Stage 5 -->
+            <div class="w-full max-w-lg rounded-xl border border-green-500/20 bg-green-500/5 p-6 text-center">
+                <div class="flex items-center justify-center gap-3 mb-2">
+                    <span class="text-xs font-mono text-green-400 bg-green-500/10 px-2 py-0.5 rounded border border-green-500/20">OUTPUT</span>
+                </div>
+                <h3 class="text-lg font-semibold mb-1 text-green-300">Structured Documentation</h3>
+                <p class="text-sm text-muted-foreground">Terminal UI • JSON • Markdown file • Git hook auto-inject</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="max-w-6xl mx-auto px-6 py-20 border-t border-border">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl md:text-4xl font-bold mb-3">Features</h2>
+            <p class="text-muted-foreground">Built for real developer workflows</p>
+        </div>
+
+        <div class="grid md:grid-cols-3 gap-6">
+            <div class="rounded-xl border border-border p-6 card-hover transition-all duration-200">
+                <h3 class="font-semibold mb-2">Multi-Pass Pipeline</h3>
+                <p class="text-sm text-muted-foreground">4 specialized LLM passes with dedicated prompts for commit, changelog, review, and PR description.</p>
+            </div>
+
+            <div class="rounded-xl border border-border p-6 card-hover transition-all duration-200">
+                <h3 class="font-semibold mb-2">Pre-Analysis Engine</h3>
+                <p class="text-sm text-muted-foreground">45+ language detection, complexity scoring (1-10), change type inference — all before the LLM call.</p>
+            </div>
+
+            <div class="rounded-xl border border-border p-6 card-hover transition-all duration-200">
+                <h3 class="font-semibold mb-2">Smart Chunking</h3>
+                <p class="text-sm text-muted-foreground">Function-boundary splitting for large diffs. Hunk-aware truncation within model context limits.</p>
+            </div>
+
+            <div class="rounded-xl border border-border p-6 card-hover transition-all duration-200">
+                <h3 class="font-semibold mb-2">Confidence Scoring</h3>
+                <p class="text-sm text-muted-foreground">Validates LLM output structure, assigns confidence levels, auto-retries on low scores.</p>
+            </div>
+
+            <div class="rounded-xl border border-border p-6 card-hover transition-all duration-200">
+                <h3 class="font-semibold mb-2">Batch Mode</h3>
+                <p class="text-sm text-muted-foreground">Process entire branch range into consolidated release notes with per-commit timing.</p>
+            </div>
+
+            <div class="rounded-xl border border-border p-6 card-hover transition-all duration-200">
+                <h3 class="font-semibold mb-2">Git Hook</h3>
+                <p class="text-sm text-muted-foreground">Auto-generates commit messages on every <code class="text-xs bg-muted px-1 rounded font-mono">git commit</code> via prepare-commit-msg hook.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Usage -->
+    <section class="max-w-6xl mx-auto px-6 py-20 border-t border-border">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl md:text-4xl font-bold mb-3">Usage</h2>
+            <p class="text-muted-foreground">Simple CLI — one command, full documentation</p>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-6">
+            <div class="code-block rounded-xl p-6">
+                <div class="flex items-center gap-2 mb-4">
+                    <div class="size-3 rounded-full bg-red-500/60"></div>
+                    <div class="size-3 rounded-full bg-yellow-500/60"></div>
+                    <div class="size-3 rounded-full bg-green-500/60"></div>
+                    <span class="ml-2 text-xs text-muted-foreground font-mono">Full Pipeline</span>
+                </div>
+                <pre class="text-sm font-mono text-slate-300 overflow-x-auto"><code><span class="text-green-400">$</span> python gemma_ollama.py input.diff
+
+<span class="text-muted-foreground"># Single pass only</span>
+<span class="text-green-400">$</span> python gemma_ollama.py input.diff --pass commit
+<span class="text-green-400">$</span> python gemma_ollama.py input.diff --pass changelog
+<span class="text-green-400">$</span> python gemma_ollama.py input.diff --pass review
+<span class="text-green-400">$</span> python gemma_ollama.py input.diff --pass pr</code></pre>
+            </div>
+
+            <div class="code-block rounded-xl p-6">
+                <div class="flex items-center gap-2 mb-4">
+                    <div class="size-3 rounded-full bg-red-500/60"></div>
+                    <div class="size-3 rounded-full bg-yellow-500/60"></div>
+                    <div class="size-3 rounded-full bg-green-500/60"></div>
+                    <span class="ml-2 text-xs text-muted-foreground font-mono">Advanced</span>
+                </div>
+                <pre class="text-sm font-mono text-slate-300 overflow-x-auto"><code><span class="text-muted-foreground"># Pipe git diff directly</span>
+<span class="text-green-400">$</span> git diff | python gemma_ollama.py -
+
+<span class="text-muted-foreground"># JSON output for CI/CD</span>
+<span class="text-green-400">$</span> python gemma_ollama.py input.diff --json
+
+<span class="text-muted-foreground"># Batch release notes</span>
+<span class="text-green-400">$</span> python gemma_ollama.py --batch main..feature
+
+<span class="text-muted-foreground"># Install git hook</span>
+<span class="text-green-400">$</span> python gemma_ollama.py --install-hook</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <!-- Sample Output -->
+    <section class="max-w-6xl mx-auto px-6 py-20 border-t border-border">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl md:text-4xl font-bold mb-3">Sample Output</h2>
+            <p class="text-muted-foreground">Real output from running Altair on a sample diff</p>
+        </div>
+
+        <div class="code-block rounded-xl p-8 max-w-3xl mx-auto">
+            <div class="flex items-center gap-2 mb-6">
+                <div class="size-3 rounded-full bg-red-500/60"></div>
+                <div class="size-3 rounded-full bg-yellow-500/60"></div>
+                <div class="size-3 rounded-full bg-green-500/60"></div>
+                <span class="ml-2 text-xs text-muted-foreground font-mono">python gemma_ollama.py sample2_auth_middleware.diff</span>
+            </div>
+            <pre class="text-xs md:text-sm font-mono text-slate-300 overflow-x-auto leading-relaxed"><code><span class="text-cyan-400">╔══════════════════════════════════════════════════════════════╗
+║   Altair — Code Intelligence Pipeline                       ║
+║   Powered by Gemma 3 via Ollama                             ║
+╚══════════════════════════════════════════════════════════════╝</span>
+
+<span class="text-slate-400">┌─ Pre-Analysis ────────────────────────────────────────────────</span>
+<span class="text-slate-400">│</span> Files: <span class="text-white font-bold">1</span> | <span class="text-green-400">+14</span> / <span class="text-red-400">-3</span> | Complexity: <span class="text-green-400">█</span><span class="text-slate-600">░░░░░░░░░</span> 1/10
+<span class="text-slate-400">│</span> Language: <span class="text-cyan-400">Python</span> | Type: <span class="text-yellow-400">feat</span>
+<span class="text-slate-400">│</span>   <span class="text-yellow-400">modified</span>  app/auth/middleware.py
+<span class="text-slate-400">└───────────────────────────────────────────────────────────────</span>
+
+Running 4 analysis passes...
+
+  [1/4] Commit Message... <span class="text-green-400 font-bold">HIGH</span>
+  [2/4] Changelog...      <span class="text-green-400 font-bold">HIGH</span>
+  [3/4] Code Review...    <span class="text-green-400 font-bold">HIGH</span>
+  [4/4] PR Description... <span class="text-green-400 font-bold">HIGH</span>
+
+<span class="text-cyan-400">════════════════════════════════════════════════════════════════
+ PIPELINE SUMMARY
+════════════════════════════════════════════════════════════════</span>
+
+  <span class="text-green-400">●</span> HIGH  Commit Message
+  <span class="text-green-400">●</span> HIGH  Changelog
+  <span class="text-green-400">●</span> HIGH  Code Review
+  <span class="text-green-400">●</span> HIGH  PR Description
+
+  Overall Quality: <span class="text-green-400 font-bold">EXCELLENT</span> (10.0/10)</code></pre>
+        </div>
+    </section>
+
+    <!-- Tech Stack -->
+    <section class="max-w-6xl mx-auto px-6 py-20 border-t border-border">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl md:text-4xl font-bold mb-3">Tech Stack</h2>
+            <p class="text-muted-foreground">100% local, zero cloud dependencies</p>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-3xl mx-auto">
+            <div class="rounded-xl border border-border p-5 text-center">
+                <p class="text-sm font-medium">Python 3.10+</p>
+                <p class="text-xs text-muted-foreground mt-1">Core runtime</p>
+            </div>
+            <div class="rounded-xl border border-border p-5 text-center">
+                <p class="text-sm font-medium">Gemma 3 (4B)</p>
+                <p class="text-xs text-muted-foreground mt-1">Google's local LLM</p>
+            </div>
+            <div class="rounded-xl border border-border p-5 text-center">
+                <p class="text-sm font-medium">Ollama</p>
+                <p class="text-xs text-muted-foreground mt-1">Local model server</p>
+            </div>
+            <div class="rounded-xl border border-border p-5 text-center">
+                <p class="text-sm font-medium">Git Integration</p>
+                <p class="text-xs text-muted-foreground mt-1">Hooks + batch</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Design Decisions -->
+    <section class="max-w-6xl mx-auto px-6 py-20 border-t border-border">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl md:text-4xl font-bold mb-3">Design Decisions</h2>
+            <p class="text-muted-foreground">Why we built it this way</p>
+        </div>
+
+        <div class="max-w-3xl mx-auto space-y-4">
+            <div class="rounded-xl border border-border p-5 flex items-start gap-4">
+                <span class="text-lg font-bold text-muted-foreground font-mono mt-0.5">01</span>
+                <div>
+                    <h4 class="font-semibold mb-1">Local-First</h4>
+                    <p class="text-sm text-muted-foreground">Everything runs on-device via Ollama. No cloud APIs, no data leaves the machine. Privacy by default.</p>
+                </div>
+            </div>
+            <div class="rounded-xl border border-border p-5 flex items-start gap-4">
+                <span class="text-lg font-bold text-muted-foreground font-mono mt-0.5">02</span>
+                <div>
+                    <h4 class="font-semibold mb-1">Pre-Analysis Before LLM</h4>
+                    <p class="text-sm text-muted-foreground">Structured metadata reduces hallucination and gives the model context it can't infer from raw diffs alone.</p>
+                </div>
+            </div>
+            <div class="rounded-xl border border-border p-5 flex items-start gap-4">
+                <span class="text-lg font-bold text-muted-foreground font-mono mt-0.5">03</span>
+                <div>
+                    <h4 class="font-semibold mb-1">Retry with Validation</h4>
+                    <p class="text-sm text-muted-foreground">Don't trust LLM output blindly. Validate structure, score confidence, and retry on failure — up to 3 times.</p>
+                </div>
+            </div>
+            <div class="rounded-xl border border-border p-5 flex items-start gap-4">
+                <span class="text-lg font-bold text-muted-foreground font-mono mt-0.5">04</span>
+                <div>
+                    <h4 class="font-semibold mb-1">Model-Agnostic</h4>
+                    <p class="text-sm text-muted-foreground">Works with any Ollama model via <code class="text-xs bg-muted px-1 rounded font-mono">--model</code> flag. Defaults to Gemma 3 4B but supports Llama, Qwen, etc.</p>
+                </div>
+            </div>
+            <div class="rounded-xl border border-border p-5 flex items-start gap-4">
+                <span class="text-lg font-bold text-muted-foreground font-mono mt-0.5">05</span>
+                <div>
+                    <h4 class="font-semibold mb-1">Modular Architecture</h4>
+                    <p class="text-sm text-muted-foreground">12 focused modules in the <code class="text-xs bg-muted px-1 rounded font-mono">gitdoc/</code> package. Each component is independently testable and swappable.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Team -->
+    <section class="max-w-6xl mx-auto px-6 py-20 border-t border-border">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl md:text-4xl font-bold mb-3">Team</h2>
+            <p class="text-muted-foreground">Built in 5 hours by</p>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 max-w-4xl mx-auto">
+            <div class="rounded-xl border border-border p-4 text-center card-hover transition-all duration-200">
+                <div class="size-12 rounded-full bg-gradient-to-br from-blue-500/20 to-purple-500/20 border border-blue-500/30 flex items-center justify-center mx-auto mb-3">
+                    <span class="text-sm font-bold">S</span>
+                </div>
+                <p class="text-sm font-medium">Stephy</p>
+                <p class="text-xs text-muted-foreground mt-1">Prompts</p>
+            </div>
+            <div class="rounded-xl border border-border p-4 text-center card-hover transition-all duration-200">
+                <div class="size-12 rounded-full bg-gradient-to-br from-green-500/20 to-cyan-500/20 border border-green-500/30 flex items-center justify-center mx-auto mb-3">
+                    <span class="text-sm font-bold">K</span>
+                </div>
+                <p class="text-sm font-medium">Kunal</p>
+                <p class="text-xs text-muted-foreground mt-1">Edge Cases</p>
+            </div>
+            <div class="rounded-xl border border-border p-4 text-center card-hover transition-all duration-200">
+                <div class="size-12 rounded-full bg-gradient-to-br from-amber-500/20 to-red-500/20 border border-amber-500/30 flex items-center justify-center mx-auto mb-3">
+                    <span class="text-sm font-bold">K</span>
+                </div>
+                <p class="text-sm font-medium">Kshitij</p>
+                <p class="text-xs text-muted-foreground mt-1">Hook & Batch</p>
+            </div>
+            <div class="rounded-xl border border-border p-4 text-center card-hover transition-all duration-200">
+                <div class="size-12 rounded-full bg-gradient-to-br from-pink-500/20 to-rose-500/20 border border-pink-500/30 flex items-center justify-center mx-auto mb-3">
+                    <span class="text-sm font-bold">J</span>
+                </div>
+                <p class="text-sm font-medium">Jyothssena</p>
+                <p class="text-xs text-muted-foreground mt-1">Scoring</p>
+            </div>
+            <div class="rounded-xl border border-border p-4 text-center card-hover transition-all duration-200">
+                <div class="size-12 rounded-full bg-gradient-to-br from-violet-500/20 to-indigo-500/20 border border-violet-500/30 flex items-center justify-center mx-auto mb-3">
+                    <span class="text-sm font-bold">T</span>
+                </div>
+                <p class="text-sm font-medium">Tanmayi</p>
+                <p class="text-xs text-muted-foreground mt-1">Chunking</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-border py-12 text-center">
+        <div class="max-w-6xl mx-auto px-6">
+            <p class="text-muted-foreground text-sm mb-2">
+                <span class="gradient-text font-semibold">Altair</span> — "the flying one" in Arabic
+            </p>
+            <p class="text-xs text-muted-foreground">
+                Like its namesake star, Altair soars above messy diffs to illuminate what truly changed.
+            </p>
+            <p class="text-xs text-muted-foreground mt-4">GDG Hackathon 2026 • Track 1 • MIT License</p>
+        </div>
+    </footer>
+
+</body>
+</html>
