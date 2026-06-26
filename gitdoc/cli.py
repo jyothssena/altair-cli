@@ -8,7 +8,7 @@ from pathlib import Path
 from .colors import C
 from .config import MODEL
 from .preanalysis import analyze_diff, format_metadata_context
-from .chunking import truncate_diff
+from .chunking import chunk_diff
 from .prompts import PASS_CONFIG
 from .pipeline import run_pass, print_header, print_metadata, print_pass_result, print_summary
 from .batch import run_batch
@@ -90,7 +90,6 @@ def main():
         sys.exit(f"{C.RED}Error:{C.RESET} No input specified. Use --help for usage.")
 
     diff_text = read_diff(args.input)
-    diff_text = truncate_diff(diff_text)
     meta = analyze_diff(diff_text)
     metadata_ctx = format_metadata_context(meta)
 
@@ -116,7 +115,7 @@ def main():
             print(f"  {C.DIM}[{i}/{len(passes)}]{C.RESET} {config['label']}...", end="", flush=True)
 
         try:
-            result = run_pass(pass_name, args.model, diff_text, metadata_ctx)
+            result = run_pass(pass_name, args.model, chunks, metadata_ctx)
         except Exception as e:
             result = {
                 "name": pass_name,
