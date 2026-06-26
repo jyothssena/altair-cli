@@ -1,0 +1,1564 @@
+diff --git a/docker-compose.yaml b/docker-compose.yaml
+index b77792a..1b6b793 100644
+--- a/docker-compose.yaml
++++ b/docker-compose.yaml
+@@ -114,78 +114,7 @@ services:
+      - ./credentials/gcs-serive-account.json:/key.json
+     environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /key.json
+-    networks:
+-      - monitoring
+-
+-  # ── FastAPI ML Pipeline ──────────────────────────────────────────────────────
+-  moment-api:
+-    build:
+-      context: ./fastapi_pipeline
+-      dockerfile: Dockerfile
+-    container_name: moment-api
+-    ports:
+-      - "8082:8080"   # host:8082 → container:8080 (8080 already taken by Airflow)
+-    environment:
+-      # GCP auth via Application Default Credentials (no key file needed).
+-      # Run once locally: gcloud auth application-default login
+-      GOOGLE_CLOUD_PROJECT: moment-486719
+-      BQ_DATASET: new_moments_processed
+-      GEMINI_API_KEY_MOMENT: ${GEMINI_API_KEY_MOMENT}
+-      INSTANCE_CONNECTION_NAME: moment-486719:us-central1:moment-db
+-      CLOUDSQL_DB:   momento
+-      CLOUDSQL_USER: momento_admin
+-      CLOUDSQL_PASS: ${CLOUDSQL_PASS}
+-    volumes:
+-      # Mount local gcloud ADC so the container authenticates the same way you do locally.
+-      # Windows path — Docker Desktop translates this automatically.
+-      - ${APPDATA}/gcloud:/root/.config/gcloud:ro
+-    depends_on:
+-      - cloud-sql-proxy
+-    networks:
+-      - monitoring
+-    restart: unless-stopped
+-    healthcheck:
+-      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+-      interval: 30s
+-      timeout: 10s
+-      retries: 3
+-      start_period: 15s
+-
+-  # ── Grafana (local dev) ───────────────────────────────────────────────────────
+-  # In production Grafana runs on Cloud Run and connects to Google Cloud Monitoring.
+-  # Locally it also uses GCM — ADC credentials are mounted from the host.
+-  grafana:
+-    image: grafana/grafana:10.4.0
+-    container_name: moment-grafana
+-    ports:
+-      - "3000:3000"
+-    environment:
+-      GF_SECURITY_ADMIN_USER: admin
+-      GF_SECURITY_ADMIN_PASSWORD: moment123
+-      GF_USERS_ALLOW_SIGN_UP: "false"
+-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/moment_pipeline.json
+-      # Install the Google Cloud Monitoring datasource plugin at startup.
+-      GF_INSTALL_PLUGINS: grafana-googlecloud-datasource
+-    volumes:
+-      - grafana-data:/var/lib/grafana
+-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+-      # Mount ADC so Grafana can authenticate to Cloud Monitoring locally.
+-      - ${APPDATA}/gcloud:/root/.config/gcloud:ro
+-    networks:
+-      - monitoring
+-    restart: unless-stopped
+-    healthcheck:
+-      test: ["CMD", "curl", "--fail", "http://localhost:3000/api/health"]
+-      interval: 30s
+-      timeout: 10s
+-      retries: 3
+-
+-networks:
+-  monitoring:
+-    driver: bridge
+ 
+ volumes:
+   postgres-db:
+-  grafana-data:
+ 
+diff --git a/fastapi_pipeline/decomposing_agent.py b/fastapi_pipeline/decomposing_agent.py
+index 3c1a538..d637812 100644
+--- a/fastapi_pipeline/decomposing_agent.py
++++ b/fastapi_pipeline/decomposing_agent.py
+@@ -22,7 +22,7 @@
+     )
+ 
+ _gemini_client = genai.Client(api_key=_api_key)
+-_GEMINI_MODEL  = "gemini-2.5-flash-lite"
++_GEMINI_MODEL  = "gemini-2.5-flash"
+ 
+ # ── System prompt ─────────────────────────────────────────────────────────────
+ 
+diff --git a/fastapi_pipeline/main.py b/fastapi_pipeline/main.py
+index c5218b4..f4b161a 100644
+--- a/fastapi_pipeline/main.py
++++ b/fastapi_pipeline/main.py
+@@ -18,34 +18,18 @@
+ 
+ import logging
+ import os
+-import time
+-from concurrent.futures import ThreadPoolExecutor, as_completed
+ from datetime import datetime
+ from typing import Optional
+ 
+-import numpy as np
+ from fastapi import FastAPI, HTTPException, BackgroundTasks
+ from pydantic import BaseModel
++
+ from compatibility_agent import run_compatibility_agent
+ from cloudsql_loader import CloudSQLLoader
+ from preprocessor_fastapi import preprocess_all
+ from bq_writer import write_to_bq
+ from tools import get_moments_for_passage, insert_comparison, get_rankings
+ from run_rankings import refit_user
+-from metrics import (
+-    pipeline_runs,
+-    pipeline_duration,
+-    compat_think_ratio,
+-    compat_feel_ratio,
+-    valid_ratio,
+-    word_count_mean,
+-    word_count_p50,
+-    word_count_p95,
+-    quality_score_mean,
+-    quality_score_p10,
+-    readability_mean,
+-    push_metrics_now,
+-)
+ 
+ logging.basicConfig(level=logging.INFO)
+ logger = logging.getLogger(__name__)
+@@ -59,43 +43,6 @@
+ _last_run: dict = {}
+ 
+ 
+-# ── Distribution gauges helper ────────────────────────────────────────────────
+-
+-def _update_distribution_gauges(moments: list, compat_results: list, run_id: str) -> None:
+-    """
+-    Compute per-run distribution statistics and write them to Cloud Monitoring Gauges.
+-    Called synchronously after preprocessing, before background tasks start.
+-
+-    moments       — list of processed moment dicts (from preprocess_all)
+-    compat_results— list of compat result dicts accumulated this run (empty on first call;
+-                    verdict ratios are updated incrementally by the background tasks instead)
+-    run_id        — ISO timestamp string used as the label value
+-    """
+-    if not moments:
+-        return
+-
+-    wcs = np.array([m["word_count"]       for m in moments if m.get("word_count") is not None], dtype=float)
+-    qs  = np.array([m["quality_score"]    for m in moments if m.get("quality_score") is not None], dtype=float)
+-    rs  = np.array([m["readability_score"]for m in moments if m.get("readability_score") is not None], dtype=float)
+-
+-    total       = len(moments)
+-    valid_count = sum(1 for m in moments if m.get("is_valid"))
+-
+-    valid_ratio.labels(run_id).set(valid_count / max(total, 1))
+-
+-    if len(wcs):
+-        word_count_mean.labels(run_id).set(float(np.mean(wcs)))
+-        word_count_p50.labels(run_id).set(float(np.percentile(wcs, 50)))
+-        word_count_p95.labels(run_id).set(float(np.percentile(wcs, 95)))
+-
+-    if len(qs):
+-        quality_score_mean.labels(run_id).set(float(np.mean(qs)))
+-        quality_score_p10.labels(run_id).set(float(np.percentile(qs, 10)))
+-
+-    if len(rs):
+-        readability_mean.labels(run_id).set(float(np.mean(rs)))
+-
+-
+ # ── Pydantic models ───────────────────────────────────────────────────────────
+ 
+ class FeedbackRequest(BaseModel):
+@@ -122,11 +69,9 @@ def run_pipeline(background_tasks: BackgroundTasks):
+     Compatibility and rankings run in the background per valid moment.
+     """
+     global _last_run
+-    start    = datetime.utcnow()
+-    run_id   = start.isoformat()
+-    t_full   = time.monotonic()
++    start = datetime.utcnow()
+     logger.info("=" * 60)
+-    logger.info(f"Pipeline run started at {run_id}")
++    logger.info(f"Pipeline run started at {start.isoformat()}")
+ 
+     # ── Step 1: Load from Cloud SQL ───────────────────────────────
+     logger.info("Step 1/3: Loading today's moments from Cloud SQL...")
+@@ -136,14 +81,11 @@ def run_pipeline(background_tasks: BackgroundTasks):
+         dfs = loader.get_dataframes()
+     except Exception as e:
+         logger.error(f"Cloud SQL load failed: {e}")
+-        pipeline_runs.labels("error").inc()
+         raise HTTPException(status_code=500, detail=f"Cloud SQL load failed: {str(e)}")
+ 
+     new_count = len(dfs["moments_raw"])
+     if new_count == 0:
+         logger.info("No moments created today — pipeline skipped")
+-        pipeline_runs.labels("skipped").inc()
+-        pipeline_duration.labels("full").observe(time.monotonic() - t_full)
+         return {
+             "status":       "skipped",
+             "reason":       "no moments created today",
+@@ -154,7 +96,6 @@ def run_pipeline(background_tasks: BackgroundTasks):
+ 
+     # ── Step 2: Preprocess ────────────────────────────────────────
+     logger.info("Step 2/3: Preprocessing...")
+-    t_prep = time.monotonic()
+     try:
+         moments, passages, books, users = preprocess_all(
+             moments_df=dfs["moments_raw"],
+@@ -163,29 +104,21 @@ def run_pipeline(background_tasks: BackgroundTasks):
+         )
+     except Exception as e:
+         logger.error(f"Preprocessing failed: {e}")
+-        pipeline_runs.labels("error").inc()
+         raise HTTPException(status_code=500, detail=f"Preprocessing failed: {str(e)}")
+-    pipeline_duration.labels("preprocess").observe(time.monotonic() - t_prep)
+ 
+     valid_moments = [m for m in moments if m.get("is_valid", False)]
+     logger.info(f"  {len(moments)} processed ({len(valid_moments)} valid)")
+ 
+     # ── Step 3: Write to BQ ───────────────────────────────────────
+     logger.info("Step 3/3: Writing to BQ...")
+-    t_bq = time.monotonic()
+     try:
+         bq_tables = write_to_bq(moments, passages, books, users)
+     except Exception as e:
+         logger.error(f"BQ write failed: {e}")
+-        pipeline_runs.labels("error").inc()
+         raise HTTPException(status_code=500, detail=f"BQ write failed: {str(e)}")
+-    pipeline_duration.labels("bq_write").observe(time.monotonic() - t_bq)
+ 
+     logger.info("Synchronous steps complete. Queuing compatibility + rankings in background.")
+ 
+-    # ── Update distribution gauges (data drift signals) ──────────
+-    _update_distribution_gauges(moments, [], run_id)
+-
+     # ── Steps 4+5: Compatibility + Rankings (background) ─────────
+     # Each valid moment is matched independently against existing BQ users.
+     # Moments in today's batch do NOT match each other (only match against
+@@ -205,9 +138,6 @@ def run_pipeline(background_tasks: BackgroundTasks):
+         )
+ 
+     duration = (datetime.utcnow() - start).total_seconds()
+-    pipeline_runs.labels("success").inc()
+-    pipeline_duration.labels("full").observe(time.monotonic() - t_full)
+-    push_metrics_now()   # flush to Cloud Monitoring before Cloud Run may shut down
+     logger.info(f"Pipeline synchronous phase complete in {duration:.2f}s")
+     logger.info("=" * 60)
+ 
+@@ -270,34 +200,8 @@ def pipeline_status():
+     return _last_run
+ 
+ 
+-@app.post("/admin/retrain-trigger")
+-async def retrain_trigger(payload: dict, background_tasks: BackgroundTasks):
+-    """
+-    Alertmanager webhook receiver.
+-    Called automatically when a Prometheus alert fires (e.g. CompatConfidenceCritical,
+-    ValidMomentRatioCritical). Schedules a full BT refit for all users in the background.
+-
+-    In production, replace the background task with a Cloud Tasks / Pub/Sub publish.
+-    """
+-    alert_name = payload.get("commonLabels", {}).get("alertname", "unknown")
+-    status     = payload.get("status", "unknown")
+-    logger.warning(f"[Retrain] alert={alert_name} status={status} — queuing full refit")
+-    pipeline_runs.labels("retrain_triggered").inc()
+-
+-    from run_rankings import main as run_full_refit
+-    background_tasks.add_task(run_full_refit)
+-    return {"status": "retraining_queued", "trigger": alert_name}
+-
+-
+ # ── Background: batch compatibility ──────────────────────────────────────────
+ 
+-# Max parallel Gemini calls per user batch.
+-# Each worker fires up to 2 Gemini requests (decompose + score), so
+-# MAX_COMPAT_WORKERS=8 means up to 16 simultaneous API calls.
+-# Tune down if you hit Gemini rate limits (HTTP 429s in the logs).
+-MAX_COMPAT_WORKERS = 8
+-
+-
+ def _run_batch_compatibility(
+     user_id:        str,
+     book_id:        str,
+@@ -306,19 +210,13 @@ def _run_batch_compatibility(
+ ) -> None:
+     """
+     Run compatibility between one processed moment and every existing BQ user
+-    on the same passage — in parallel using ThreadPoolExecutor.
+-
+-    Work is I/O-bound (Gemini API + BigQuery), so threads give real speedup:
+-    N matches that took N×~4s sequentially now take ~4s regardless of N
+-    (up to MAX_COMPAT_WORKERS concurrent pairs).
++    on the same passage. Runs rankings refit for this user once all compat
++    runs are complete.
+ 
+     Only matches against users already in BQ — moments ingested in the same
+     pipeline run are excluded (get_moments_for_passage uses exclude_user_id,
+     and BQ is written before this task starts so same-batch users will appear,
+     but passage-level deduplication in the compat agent handles exact pairs).
+-
+-    BQ streaming insert (log_compat_run) is thread-safe — each call is an
+-    independent HTTP request, no shared state.
+     """
+     logger.info(f"[Compat] starting batch for {user_id} on {book_id}/{passage_id}")
+ 
+@@ -332,58 +230,35 @@ def _run_batch_compatibility(
+         logger.info(f"[Compat] no other users on passage {passage_id} — skipping")
+         return
+ 
+-    logger.info(
+-        f"[Compat] running {len(other_moments)} comparisons for {user_id} "
+-        f"(parallel, max_workers={MAX_COMPAT_WORKERS})"
+-    )
++    logger.info(f"[Compat] running {len(other_moments)} comparisons for {user_id}")
++    compat_runs   = 0
++    compat_errors = 0
+ 
+-    def _run_one(other: dict):
+-        """Run a single compat pair. Returns (other_user_id, result_dict)."""
++    for other in other_moments:
+         other_user_id = str(other["user_id"])
+         other_text    = other.get("cleaned_interpretation", "")
+         if not other_text:
+-            return other_user_id, None
+-        result = run_compatibility_agent(
+-            user_a_id=user_id,
+-            user_b_id=other_user_id,
+-            book_id=book_id,
+-            moment_a={"passage_id": passage_id, "cleaned_interpretation": interpretation},
+-            moment_b={"passage_id": passage_id, "cleaned_interpretation": other_text},
+-        )
+-        return other_user_id, result
+-
+-    compat_runs_count = 0
+-    compat_errors     = 0
+-
+-    with ThreadPoolExecutor(max_workers=MAX_COMPAT_WORKERS) as executor:
+-        futures = {executor.submit(_run_one, other): other for other in other_moments}
+-
+-        for future in as_completed(futures):
+-            try:
+-                other_user_id, result = future.result()
+-                if result is None:
+-                    pass  # empty interpretation, already skipped inside _run_one
+-                elif "error" in result:
+-                    logger.warning(f"[Compat] error {user_id}×{other_user_id}: {result['error']}")
+-                    compat_errors += 1
+-                else:
+-                    compat_runs_count += 1
+-                    # Update rolling verdict ratio gauges
+-                    dt = result.get("dominant_think", "")
+-                    df = result.get("dominant_feel", "")
+-                    if dt in ("resonate", "contradict", "diverge"):
+-                        compat_think_ratio.labels(dt).inc()
+-                    if df in ("resonate", "contradict", "diverge"):
+-                        compat_feel_ratio.labels(df).inc()
+-                    logger.info(
+-                        f"[Compat] ✓ {user_id}×{other_user_id}: "
+-                        f"{dt} ({result.get('confidence')})"
+-                    )
+-            except Exception as e:
+-                logger.error(f"[Compat] exception in future: {e}")
++            continue
++
++        try:
++            result = run_compatibility_agent(
++                user_a_id=user_id,
++                user_b_id=other_user_id,
++                book_id=book_id,
++                moment_a={"passage_id": passage_id, "cleaned_interpretation": interpretation},
++                moment_b={"passage_id": passage_id, "cleaned_interpretation": other_text},
++            )
++            if "error" in result:
++                logger.warning(f"[Compat] error {user_id}×{other_user_id}: {result['error']}")
+                 compat_errors += 1
++            else:
++                compat_runs += 1
++                logger.info(f"[Compat] ✓ {user_id}×{other_user_id}: {result.get('dominant_think')} ({result.get('confidence')})")
++        except Exception as e:
++            logger.error(f"[Compat] exception {user_id}×{other_user_id}: {e}")
++            compat_errors += 1
+ 
+-    logger.info(f"[Compat] complete for {user_id} — {compat_runs_count} runs, {compat_errors} errors")
++    logger.info(f"[Compat] complete for {user_id} — {compat_runs} runs, {compat_errors} errors")
+ 
+     # Refit rankings for this user now that new compat runs are logged
+     try:
+@@ -404,4 +279,4 @@ def _refit_and_save_rankings(
+     """Thin wrapper — delegates all BT logic to run_rankings.refit_user()."""
+     refit_user(user_id, book_id=book_id, passage_id=passage_id, k=k)# test
+ # timeout fix
+-# test1
+\ No newline at end of file
++# test1
+diff --git a/fastapi_pipeline/metrics.py b/fastapi_pipeline/metrics.py
+deleted file mode 100644
+index 81515c0..0000000
+--- a/fastapi_pipeline/metrics.py
++++ /dev/null
+@@ -1,371 +0,0 @@
+-"""
+-metrics.py — Google Cloud Monitoring custom metrics for MOMENT.
+-
+-Replaces the prometheus_client implementation. Provides the same
+-.inc() / .observe() / .set() / .labels() interface so every call site
+-in compatibility_agent.py, preprocessor_fastapi.py, run_rankings.py,
+-and main.py requires zero changes.
+-
+-How it works:
+-  - All metric values accumulate in memory (thread-safe dicts).
+-  - A daemon thread pushes everything to Cloud Monitoring every 60 s.
+-  - push_metrics_now() forces an immediate push (called at pipeline end).
+-  - On Cloud Run, GCP auth comes from the service's attached service account.
+-  - Locally, auth comes from ADC (gcloud auth application-default login).
+-  - If credentials are unavailable the push fails silently — the pipeline
+-    is never affected.
+-"""
+-
+-import os
+-import threading
+-import time
+-from collections import defaultdict
+-
+-GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "moment-486719")
+-_METRIC_PREFIX = "custom.googleapis.com/moment"
+-_project_name  = f"projects/{GOOGLE_CLOUD_PROJECT}"
+-
+-# Minimum seconds between consecutive pushes (Cloud Monitoring rate limit guard).
+-_MIN_PUSH_INTERVAL = 30
+-_last_push: float  = 0.0
+-_push_lock         = threading.Lock()
+-
+-# Registry of every metric object — collected at push time.
+-_REGISTRY: list = []
+-
+-
+-# ── Counter ───────────────────────────────────────────────────────────────────
+-
+-class _Counter:
+-    """
+-    Monotonically increasing counter.
+-    Identical API to prometheus_client.Counter:
+-      counter.inc()
+-      counter.labels("value").inc(amount)
+-    """
+-
+-    def __init__(self, name: str, description: str, label_names=()):
+-        self._type   = f"{_METRIC_PREFIX}/{name}"
+-        self._names  = tuple(label_names)
+-        self._vals: dict = defaultdict(float)   # label_key → total
+-        self._lock   = threading.Lock()
+-        self._labels: dict = {}
+-        _REGISTRY.append(self)
+-
+-    def labels(self, *args, **kwargs):
+-        c = _Counter.__new__(_Counter)
+-        c._type   = self._type
+-        c._names  = self._names
+-        c._vals   = self._vals          # shared — accumulates centrally
+-        c._lock   = self._lock
+-        c._labels = dict(zip(self._names, args)) if args else dict(kwargs)
+-        return c
+-
+-    def inc(self, amount: float = 1):
+-        key = tuple(sorted(self._labels.items()))
+-        with self._lock:
+-            self._vals[key] += float(amount)
+-
+-    # Called by the push thread.
+-    def _collect(self):
+-        with self._lock:
+-            return [(self._type, dict(k), v) for k, v in self._vals.items()]
+-
+-
+-# ── Gauge ─────────────────────────────────────────────────────────────────────
+-
+-class _Gauge:
+-    """
+-    Point-in-time value.
+-    Identical API to prometheus_client.Gauge:
+-      gauge.set(value)
+-      gauge.inc(amount)          # works the same as Prometheus Gauge.inc()
+-      gauge.labels("v").set(x)
+-    """
+-
+-    def __init__(self, name: str, description: str, label_names=()):
+-        self._type   = f"{_METRIC_PREFIX}/{name}"
+-        self._names  = tuple(label_names)
+-        self._vals: dict = defaultdict(float)
+-        self._lock   = threading.Lock()
+-        self._labels: dict = {}
+-        _REGISTRY.append(self)
+-
+-    def labels(self, *args, **kwargs):
+-        g = _Gauge.__new__(_Gauge)
+-        g._type   = self._type
+-        g._names  = self._names
+-        g._vals   = self._vals
+-        g._lock   = self._lock
+-        g._labels = dict(zip(self._names, args)) if args else dict(kwargs)
+-        return g
+-
+-    def set(self, value: float):
+-        key = tuple(sorted(self._labels.items()))
+-        with self._lock:
+-            self._vals[key] = float(value)
+-
+-    def inc(self, amount: float = 1):
+-        key = tuple(sorted(self._labels.items()))
+-        with self._lock:
+-            self._vals[key] = self._vals.get(key, 0.0) + float(amount)
+-
+-    def _collect(self):
+-        with self._lock:
+-            return [(self._type, dict(k), v) for k, v in self._vals.items()]
+-
+-
+-# ── Histogram ─────────────────────────────────────────────────────────────────
+-
+-class _Histogram:
+-    """
+-    Observation distribution — stores last 1 000 values per label set.
+-    Pushes mean and P95 as separate GAUGE time series (GCM does not have
+-    a native histogram type; mean + P95 satisfy all dashboard and alerting needs).
+-    Identical API to prometheus_client.Histogram:
+-      hist.observe(value)
+-      hist.labels("v").observe(value)
+-    The buckets= argument is accepted but ignored (kept for API compatibility).
+-    """
+-
+-    def __init__(self, name: str, description: str, label_names=(), buckets=None):
+-        self._type   = f"{_METRIC_PREFIX}/{name}"
+-        self._names  = tuple(label_names)
+-        self._obs: dict  = defaultdict(list)
+-        self._lock   = threading.Lock()
+-        self._labels: dict = {}
+-        _REGISTRY.append(self)
+-
+-    def labels(self, *args, **kwargs):
+-        h = _Histogram.__new__(_Histogram)
+-        h._type   = self._type
+-        h._names  = self._names
+-        h._obs    = self._obs           # shared
+-        h._lock   = self._lock
+-        h._labels = dict(zip(self._names, args)) if args else dict(kwargs)
+-        return h
+-
+-    def observe(self, value: float):
+-        key = tuple(sorted(self._labels.items()))
+-        with self._lock:
+-            self._obs[key].append(float(value))
+-            if len(self._obs[key]) > 1000:
+-                self._obs[key] = self._obs[key][-1000:]
+-
+-    def _collect(self):
+-        result = []
+-        with self._lock:
+-            for key, vals in self._obs.items():
+-                if not vals:
+-                    continue
+-                labels   = dict(key)
+-                mean_val = sum(vals) / len(vals)
+-                p95_val  = sorted(vals)[int(0.95 * len(vals))]
+-                result.append((f"{self._type}/mean", labels, mean_val))
+-                result.append((f"{self._type}/p95",  labels, p95_val))
+-        return result
+-
+-
+-# ── Push to Google Cloud Monitoring ──────────────────────────────────────────
+-
+-def _build_time_series(mtype: str, labels: dict, value: float, now: float):
+-    """Build one Cloud Monitoring TimeSeries for a single GAUGE point."""
+-    from google.cloud import monitoring_v3  # lazy — not loaded at import time
+-    seconds = int(now)
+-    nanos   = int((now - seconds) * 10 ** 9)
+-    interval = monitoring_v3.TimeInterval(
+-        {"end_time": {"seconds": seconds, "nanos": nanos}}
+-    )
+-    point = monitoring_v3.Point(
+-        {"interval": interval, "value": {"double_value": float(value)}}
+-    )
+-    ts = monitoring_v3.TimeSeries()
+-    ts.metric.type = mtype
+-    ts.metric.labels.update({k: str(v) for k, v in labels.items()})
+-    ts.resource.type = "global"
+-    ts.resource.labels["project_id"] = GOOGLE_CLOUD_PROJECT
+-    # Do NOT set metric_kind / value_type — GCM infers them from the descriptor.
+-    # Use list assignment (not .append) — works across all protobuf versions.
+-    ts.points = [point]
+-    return ts
+-
+-
+-def _do_push():
+-    """Collect all metrics and write to Cloud Monitoring. Silently skips on error."""
+-    try:
+-        from google.cloud import monitoring_v3  # noqa: F401  (triggers lazy import check)
+-        client    = monitoring_v3.MetricServiceClient()
+-        now       = time.time()
+-        all_ts    = []
+-
+-        for metric in _REGISTRY:
+-            for (mtype, labels, value) in metric._collect():
+-                all_ts.append(_build_time_series(mtype, labels, value, now))
+-
+-        # Cloud Monitoring accepts at most 200 time series per request.
+-        for i in range(0, len(all_ts), 200):
+-            client.create_time_series(
+-                name=_project_name,
+-                time_series=all_ts[i : i + 200],
+-            )
+-        print(f"[Metrics] pushed {len(all_ts)} series to Cloud Monitoring")
+-
+-    except Exception as exc:
+-        # Credentials absent locally or transient GCP error — never crash the app.
+-        print(f"[Metrics] Cloud Monitoring push skipped: {exc}")
+-
+-
+-def push_metrics_now():
+-    """
+-    Force an immediate metric push to Cloud Monitoring.
+-    Called at the end of each pipeline run so metrics are not lost if
+-    Cloud Run shuts down the instance before the background thread fires.
+-    Respects a 30-second minimum interval to avoid rate-limit errors.
+-    """
+-    global _last_push
+-    with _push_lock:
+-        now = time.time()
+-        if now - _last_push < _MIN_PUSH_INTERVAL:
+-            return
+-        _last_push = now
+-    _do_push()
+-
+-
+-def _background_push():
+-    """Daemon thread: push all metrics every 60 seconds."""
+-    while True:
+-        time.sleep(60)
+-        push_metrics_now()
+-
+-
+-threading.Thread(target=_background_push, daemon=True, name="gcm-push").start()
+-
+-
+-# ── Metric definitions ────────────────────────────────────────────────────────
+-# Names, label sets, and types mirror the original prometheus_client definitions
+-# exactly — every call site in the codebase works without modification.
+-
+-# A. Pipeline ─────────────────────────────────────────────────────────────────
+-
+-pipeline_runs = _Counter(
+-    "pipeline_runs_total",
+-    "Total pipeline run outcomes",
+-    ["status"],           # success | skipped | error | retrain_triggered
+-)
+-
+-pipeline_duration = _Histogram(
+-    "pipeline_duration_seconds",
+-    "Duration of each pipeline phase in seconds",
+-    ["phase"],            # full | preprocess | bq_write
+-    buckets=[1, 2, 5, 10, 30, 60, 120, 300, 600],
+-)
+-
+-bq_write_errors = _Counter(
+-    "pipeline_bq_write_errors_total",
+-    "BigQuery write errors per table",
+-    ["table"],
+-)
+-
+-bq_writes = _Counter(
+-    "pipeline_bq_writes_total",
+-    "Successful BigQuery write operations per table",
+-    ["table"],
+-)
+-
+-# B. Preprocessing — data quality / drift signals ─────────────────────────────
+-
+-moments_processed = _Counter(
+-    "pipeline_moments_processed_total",
+-    "Moment processing outcomes",
+-    ["outcome"],          # valid | skipped_injection | skipped_pii | skipped_profanity | skipped_spam | skipped_invalid
+-)
+-
+-# Per-run distribution gauges — data drift indicators.
+-valid_ratio        = _Gauge("valid_ratio",        "Fraction of moments passing preprocessing",  ["pipeline_run_id"])
+-word_count_mean    = _Gauge("word_count_mean",     "Mean interpretation word count per run",     ["pipeline_run_id"])
+-word_count_p50     = _Gauge("word_count_p50",      "Median interpretation word count per run",   ["pipeline_run_id"])
+-word_count_p95     = _Gauge("word_count_p95",      "P95 interpretation word count per run",      ["pipeline_run_id"])
+-quality_score_mean = _Gauge("quality_score_mean",  "Mean quality score per run",                 ["pipeline_run_id"])
+-quality_score_p10  = _Gauge("quality_score_p10",   "P10 quality score per run",                  ["pipeline_run_id"])
+-readability_mean   = _Gauge("readability_mean",    "Mean Flesch readability score per run",      ["pipeline_run_id"])
+-
+-# C. Compatibility / Gemini — model decay signals ─────────────────────────────
+-
+-compat_runs = _Counter(
+-    "compat_runs_total",
+-    "Compatibility agent run outcomes",
+-    ["outcome"],          # success | cached | error_decomp | error_scoring | error_agg
+-)
+-
+-# Primary model decay indicator: sustained low confidence → retraining.
+-compat_confidence_hist = _Histogram(
+-    "compat_confidence",
+-    "Distribution of compatibility confidence scores",
+-    ["dominant_think"],   # resonate | contradict | diverge
+-    buckets=[0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.0],
+-)
+-
+-compat_confidence_gauge = _Gauge(
+-    "compat_confidence_gauge",
+-    "Most recently observed compatibility confidence score",
+-)
+-
+-# Verdict distribution — behavioral drift signal.
+-compat_think_ratio = _Gauge(
+-    "compat_think_ratio",
+-    "Cumulative think-dimension verdict counts",
+-    ["verdict"],          # resonate | contradict | diverge
+-)
+-compat_feel_ratio = _Gauge(
+-    "compat_feel_ratio",
+-    "Cumulative feel-dimension verdict counts",
+-    ["verdict"],
+-)
+-
+-gemini_latency = _Histogram(
+-    "gemini_latency_seconds",
+-    "Gemini API call latency in seconds",
+-    ["call_type"],        # decompose | score
+-    buckets=[0.5, 1, 2, 3, 5, 10, 20, 30, 60],
+-)
+-
+-gemini_errors = _Counter(
+-    "gemini_errors_total",
+-    "Gemini API call errors",
+-    ["call_type", "error_type"],  # error_type: json_parse | missing_keys | exception
+-)
+-
+-decomp_cache_hits   = _Counter("decomp_cache_hits_total",   "Decomposition BQ cache hits")
+-decomp_cache_misses = _Counter("decomp_cache_misses_total", "Decomposition BQ cache misses")
+-compat_cache_hits   = _Counter("compat_cache_hits_total",   "Full compat result BQ cache hits")
+-
+-# D. Bradley-Terry rankings ───────────────────────────────────────────────────
+-
+-bt_refits = _Counter(
+-    "bt_refits_total",
+-    "Bradley-Terry model refit outcomes",
+-    ["outcome"],          # success | no_data | error
+-)
+-
+-bt_refit_duration = _Histogram(
+-    "bt_refit_duration_seconds",
+-    "Time to refit BT model and write rankings for one user",
+-    buckets=[0.1, 0.5, 1, 2, 5, 10, 30, 60],
+-)
+-
+-bt_n_comparisons = _Histogram(
+-    "bt_n_comparisons",
+-    "Comparison count available at BT refit time",
+-    buckets=[0, 1, 2, 5, 10, 20, 50, 100, 200],
+-)
+-
+-# Sustained near-zero → users have given minimal explicit feedback (cold start).
+-bt_blend_weight = _Gauge(
+-    "bt_blend_weight_bt",
+-    "BT contribution to final blend score for the most recently refit user",
+-)
+-
+-rankings_written = _Counter(
+-    "rankings_written_total",
+-    "Ranking rows successfully inserted to BigQuery",
+-)
+\ No newline at end of file
+diff --git a/fastapi_pipeline/requirements.txt b/fastapi_pipeline/requirements.txt
+index 583bb98..245f6c3 100644
+--- a/fastapi_pipeline/requirements.txt
++++ b/fastapi_pipeline/requirements.txt
+@@ -9,15 +9,17 @@ cloud-sql-python-connector[pg8000]
+ pandas
+ pandas-gbq
+ pyarrow
+-numpy>=1.26.0
+-textstat>=0.7.3        # Flesch readability score
++textstat
++langdetect
++requests
++pyyaml
+ langdetect>=1.0.9      # language detection
++textstat>=0.7.3        # Flesch readability score
+ scikit-learn>=1.4.0    # TF-IDF + cosine similarity for duplicate detection
+ requests>=2.31.0       # Gutenberg API calls
+ pyyaml>=6.0.1          # reading config.yaml
+-google-cloud-storage>=2.14.0  # GCS data acquisition
+-pytest>=7.4.0
++google-cloud-storage>=2.14.0  # GCS data acquisition           # progress bars
++pytest>=7.4.0    
++pyyaml>=6.0
+ python-dotenv>=1.0.0
+-google-genai
+-# ── Monitoring ────────────────────────────────────────────────────────────────
+-google-cloud-monitoring>=2.19.0        # Push custom metrics to Cloud Monitoring (works on Cloud Run via ADC)
+\ No newline at end of file
++google-genai
+\ No newline at end of file
+diff --git a/fastapi_pipeline/run_rankings.py b/fastapi_pipeline/run_rankings.py
+index 03a26c4..936a291 100644
+--- a/fastapi_pipeline/run_rankings.py
++++ b/fastapi_pipeline/run_rankings.py
+@@ -302,7 +302,7 @@ def refit_user(
+         for pos, r in enumerate(ranked, 1):
+             wu = r.pop("weights_used", {})
+             rows_to_insert.append({
+-                "user_id":       str(user_id),
++                "user_id":       int(user_id),
+                 "book_id":       b_id,
+                 "passage_id":    p_id,
+                 "rank_position": pos,
+diff --git a/monitoring/grafana/dashboards/moment_pipeline.json b/monitoring/grafana/dashboards/moment_pipeline.json
+deleted file mode 100644
+index ca2943b..0000000
+--- a/monitoring/grafana/dashboards/moment_pipeline.json
++++ /dev/null
+@@ -1,450 +0,0 @@
+-{
+-  "__inputs": [],
+-  "__requires": [
+-    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+-    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+-  ],
+-  "annotations": { "list": [] },
+-  "description": "MOMENT ML Pipeline — model health, data drift, and infrastructure monitoring",
+-  "editable": true,
+-  "fiscalYearStartMonth": 0,
+-  "graphTooltip": 1,
+-  "id": null,
+-  "links": [],
+-  "panels": [
+-
+-    {
+-      "collapsed": false,
+-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+-      "id": 1,
+-      "title": "Pipeline Overview",
+-      "type": "row"
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": {
+-          "color": { "mode": "thresholds" },
+-          "thresholds": { "mode": "absolute", "steps": [
+-            { "color": "green", "value": null },
+-            { "color": "red",   "value": 0 }
+-          ]},
+-          "unit": "short"
+-        }
+-      },
+-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+-      "id": 2,
+-      "options": { "reduceOptions": { "calcs": ["sum"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background" },
+-      "title": "Pipeline Runs (24h)",
+-      "type": "stat",
+-      "targets": [
+-        { "expr": "increase(moment_pipeline_runs_total{status=\"success\"}[24h])", "legendFormat": "success" },
+-        { "expr": "increase(moment_pipeline_runs_total{status=\"error\"}[24h])",   "legendFormat": "error" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": {
+-          "color": { "mode": "thresholds" },
+-          "thresholds": { "mode": "absolute", "steps": [
+-            { "color": "red",    "value": null },
+-            { "color": "yellow", "value": 0.50 },
+-            { "color": "green",  "value": 0.70 }
+-          ]},
+-          "min": 0, "max": 1,
+-          "unit": "percentunit"
+-        }
+-      },
+-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+-      "id": 3,
+-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": true, "showThresholdMarkers": true },
+-      "title": "Valid Moment Ratio (last run)",
+-      "type": "gauge",
+-      "targets": [
+-        { "expr": "moment_valid_ratio", "legendFormat": "valid ratio" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": {
+-          "color": { "mode": "thresholds" },
+-          "thresholds": { "mode": "absolute", "steps": [
+-            { "color": "red",    "value": null },
+-            { "color": "yellow", "value": 0.40 },
+-            { "color": "green",  "value": 0.55 }
+-          ]},
+-          "min": 0, "max": 1,
+-          "unit": "short"
+-        }
+-      },
+-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+-      "id": 4,
+-      "options": { "reduceOptions": { "calcs": ["mean"] }, "orientation": "auto", "textMode": "value_and_name", "colorMode": "background" },
+-      "title": "Avg Confidence (1h)",
+-      "type": "stat",
+-      "targets": [
+-        { "expr": "avg_over_time(moment_compat_confidence_gauge[1h])", "legendFormat": "confidence" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "short", "color": { "mode": "palette-classic" } }
+-      },
+-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+-      "id": 5,
+-      "options": { "reduceOptions": { "calcs": ["sum"] }, "orientation": "auto", "textMode": "value_and_name", "colorMode": "background" },
+-      "title": "Compat Runs (1h)",
+-      "type": "stat",
+-      "targets": [
+-        { "expr": "increase(moment_compat_runs_total{outcome=\"success\"}[1h])", "legendFormat": "success" },
+-        { "expr": "increase(moment_compat_runs_total{outcome=\"cached\"}[1h])",  "legendFormat": "cached" },
+-        { "expr": "increase(moment_compat_runs_total{outcome=~\"error.*\"}[1h])","legendFormat": "error" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "short", "color": { "mode": "palette-classic" } }
+-      },
+-      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 1 },
+-      "id": 6,
+-      "options": { "reduceOptions": { "calcs": ["sum"] }, "orientation": "horizontal", "textMode": "value_and_name", "colorMode": "background" },
+-      "title": "Preprocessing Skips (1h)",
+-      "type": "stat",
+-      "targets": [
+-        { "expr": "increase(moment_pipeline_moments_processed_total{outcome=\"skipped_injection\"}[1h])",  "legendFormat": "injection" },
+-        { "expr": "increase(moment_pipeline_moments_processed_total{outcome=\"skipped_pii\"}[1h])",       "legendFormat": "PII" },
+-        { "expr": "increase(moment_pipeline_moments_processed_total{outcome=\"skipped_profanity\"}[1h])","legendFormat": "profanity" },
+-        { "expr": "increase(moment_pipeline_moments_processed_total{outcome=\"skipped_spam\"}[1h])",     "legendFormat": "spam" },
+-        { "expr": "increase(moment_pipeline_moments_processed_total{outcome=\"skipped_invalid\"}[1h])",  "legendFormat": "invalid" }
+-      ]
+-    },
+-
+-    {
+-      "collapsed": false,
+-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+-      "id": 10,
+-      "title": "Model Confidence — Primary Decay Signal",
+-      "type": "row"
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": {
+-          "unit": "short",
+-          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+-          "thresholds": { "mode": "absolute", "steps": [
+-            { "color": "transparent", "value": null },
+-            { "color": "red",   "value": 0.30 },
+-            { "color": "yellow","value": 0.40 },
+-            { "color": "green", "value": 0.55 }
+-          ]}
+-        }
+-      },
+-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+-      "id": 11,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+-      "title": "Confidence Score Distribution Over Time (P10 / P50 / P90)",
+-      "type": "timeseries",
+-      "targets": [
+-        {
+-          "expr": "histogram_quantile(0.90, sum(rate(moment_compat_confidence_bucket[30m])) by (le))",
+-          "legendFormat": "P90"
+-        },
+-        {
+-          "expr": "histogram_quantile(0.50, sum(rate(moment_compat_confidence_bucket[30m])) by (le))",
+-          "legendFormat": "P50 (median)"
+-        },
+-        {
+-          "expr": "histogram_quantile(0.10, sum(rate(moment_compat_confidence_bucket[30m])) by (le))",
+-          "legendFormat": "P10 (early warning)"
+-        }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+-      },
+-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+-      "id": 12,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+-      "title": "Confidence by Verdict (P50) — Detects per-class decay",
+-      "type": "timeseries",
+-      "targets": [
+-        {
+-          "expr": "histogram_quantile(0.50, sum(rate(moment_compat_confidence_bucket{dominant_think=\"resonate\"}[30m])) by (le))",
+-          "legendFormat": "resonate P50"
+-        },
+-        {
+-          "expr": "histogram_quantile(0.50, sum(rate(moment_compat_confidence_bucket{dominant_think=\"contradict\"}[30m])) by (le))",
+-          "legendFormat": "contradict P50"
+-        },
+-        {
+-          "expr": "histogram_quantile(0.50, sum(rate(moment_compat_confidence_bucket{dominant_think=\"diverge\"}[30m])) by (le))",
+-          "legendFormat": "diverge P50"
+-        }
+-      ]
+-    },
+-
+-    {
+-      "collapsed": false,
+-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+-      "id": 20,
+-      "title": "Data Drift — Input Distribution",
+-      "type": "row"
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+-      },
+-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 15 },
+-      "id": 21,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+-      "title": "Interpretation Word Count (mean / P50 / P95) — Distribution shift detection",
+-      "description": "Baseline: mean ~80–150 words. Alert thresholds: <30 (too short), P95>400 (tail shift).",
+-      "type": "timeseries",
+-      "targets": [
+-        { "expr": "moment_word_count_mean", "legendFormat": "mean" },
+-        { "expr": "moment_word_count_p50",  "legendFormat": "P50" },
+-        { "expr": "moment_word_count_p95",  "legendFormat": "P95" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+-      },
+-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 15 },
+-      "id": 22,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+-      "title": "Quality Score (mean / P10) + Readability Mean — Data quality drift",
+-      "description": "P10 quality score is the early warning: a low tail rising means more borderline interpretations are sneaking through.",
+-      "type": "timeseries",
+-      "targets": [
+-        { "expr": "moment_quality_score_mean", "legendFormat": "quality mean" },
+-        { "expr": "moment_quality_score_p10",  "legendFormat": "quality P10 (low tail)" },
+-        { "expr": "moment_readability_mean",   "legendFormat": "readability (Flesch)" }
+-      ]
+-    },
+-
+-    {
+-      "collapsed": false,
+-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+-      "id": 30,
+-      "title": "Verdict Distribution — Behavioural Drift",
+-      "type": "row"
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" } } }
+-      },
+-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 23 },
+-      "id": 31,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+-      "title": "THINK Verdict Distribution Over Time (stacked)",
+-      "description": "Stacked total = all compat runs. A shift in shape = behavioural drift. Diverge > 60% sustained triggers alert.",
+-      "type": "timeseries",
+-      "targets": [
+-        { "expr": "increase(moment_compat_think_ratio{verdict=\"resonate\"}[5m])",   "legendFormat": "resonate" },
+-        { "expr": "increase(moment_compat_think_ratio{verdict=\"contradict\"}[5m])", "legendFormat": "contradict" },
+-        { "expr": "increase(moment_compat_think_ratio{verdict=\"diverge\"}[5m])",    "legendFormat": "diverge" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" } } }
+-      },
+-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 23 },
+-      "id": 32,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+-      "title": "FEEL Verdict Distribution Over Time (stacked)",
+-      "type": "timeseries",
+-      "targets": [
+-        { "expr": "increase(moment_compat_feel_ratio{verdict=\"resonate\"}[5m])",   "legendFormat": "resonate" },
+-        { "expr": "increase(moment_compat_feel_ratio{verdict=\"contradict\"}[5m])", "legendFormat": "contradict" },
+-        { "expr": "increase(moment_compat_feel_ratio{verdict=\"diverge\"}[5m])",    "legendFormat": "diverge" }
+-      ]
+-    },
+-
+-    {
+-      "collapsed": false,
+-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+-      "id": 40,
+-      "title": "Gemini API Latency & Reliability",
+-      "type": "row"
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+-      },
+-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 31 },
+-      "id": 41,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+-      "title": "Gemini Call Latency (P50 / P95) by Call Type",
+-      "type": "timeseries",
+-      "targets": [
+-        { "expr": "histogram_quantile(0.50, sum(rate(moment_gemini_latency_seconds_bucket{call_type=\"decompose\"}[5m])) by (le))", "legendFormat": "decompose P50" },
+-        { "expr": "histogram_quantile(0.95, sum(rate(moment_gemini_latency_seconds_bucket{call_type=\"decompose\"}[5m])) by (le))", "legendFormat": "decompose P95" },
+-        { "expr": "histogram_quantile(0.50, sum(rate(moment_gemini_latency_seconds_bucket{call_type=\"score\"}[5m])) by (le))",     "legendFormat": "score P50" },
+-        { "expr": "histogram_quantile(0.95, sum(rate(moment_gemini_latency_seconds_bucket{call_type=\"score\"}[5m])) by (le))",     "legendFormat": "score P95" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2 } }
+-      },
+-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 31 },
+-      "id": 42,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+-      "title": "Gemini Error Rate by Type",
+-      "type": "timeseries",
+-      "targets": [
+-        { "expr": "rate(moment_gemini_errors_total[5m])", "legendFormat": "{{ call_type }} / {{ error_type }}" }
+-      ]
+-    },
+-
+-    {
+-      "collapsed": false,
+-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
+-      "id": 50,
+-      "title": "Bradley-Terry Model Health",
+-      "type": "row"
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": {
+-          "unit": "short",
+-          "custom": { "lineWidth": 2 },
+-          "thresholds": { "mode": "absolute", "steps": [
+-            { "color": "yellow", "value": null },
+-            { "color": "green",  "value": 0.15 }
+-          ]}
+-        }
+-      },
+-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 39 },
+-      "id": 51,
+-      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+-      "title": "BT Blend Weight (0=cold start, 0.7=data-rich)",
+-      "description": "Tracks how much the Bradley-Terry learned ranking contributes vs raw confidence. Low = not enough user comparison data.",
+-      "type": "timeseries",
+-      "targets": [
+-        { "expr": "moment_bt_blend_weight_bt", "legendFormat": "BT weight" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+-      },
+-      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 39 },
+-      "id": 52,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+-      "title": "BT Refit Duration (P50 / P95)",
+-      "type": "timeseries",
+-      "targets": [
+-        { "expr": "histogram_quantile(0.50, sum(rate(moment_bt_refit_duration_seconds_bucket[5m])) by (le))", "legendFormat": "P50" },
+-        { "expr": "histogram_quantile(0.95, sum(rate(moment_bt_refit_duration_seconds_bucket[5m])) by (le))", "legendFormat": "P95" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+-      },
+-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 39 },
+-      "id": 53,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+-      "title": "Cache Efficiency (decomp & compat)",
+-      "description": "Low hit rate = users writing about new passages (expected growth signal). Sudden drop = possible data reset.",
+-      "type": "timeseries",
+-      "targets": [
+-        {
+-          "expr": "rate(moment_decomp_cache_hits_total[5m]) / (rate(moment_decomp_cache_hits_total[5m]) + rate(moment_decomp_cache_misses_total[5m]) + 1e-9)",
+-          "legendFormat": "decomp cache hit %"
+-        },
+-        {
+-          "expr": "rate(moment_compat_cache_hits_total[5m]) / (rate(moment_compat_runs_total[5m]) + 1e-9)",
+-          "legendFormat": "compat cache hit %"
+-        }
+-      ]
+-    },
+-
+-    {
+-      "collapsed": false,
+-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 46 },
+-      "id": 60,
+-      "title": "HTTP Endpoint Performance",
+-      "type": "row"
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2 } }
+-      },
+-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 47 },
+-      "id": 61,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+-      "title": "HTTP Request Rate by Endpoint",
+-      "type": "timeseries",
+-      "targets": [
+-        { "expr": "sum by (handler) (rate(http_requests_total[5m]))", "legendFormat": "{{ handler }}" }
+-      ]
+-    },
+-
+-    {
+-      "datasource": "Prometheus",
+-      "fieldConfig": {
+-        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+-      },
+-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 47 },
+-      "id": 62,
+-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+-      "title": "HTTP Request Latency P95 by Handler",
+-      "type": "timeseries",
+-      "targets": [
+-        {
+-          "expr": "histogram_quantile(0.95, sum by (handler, le) (rate(http_request_duration_seconds_bucket[5m])))",
+-          "legendFormat": "{{ handler }} P95"
+-        }
+-      ]
+-    }
+-
+-  ],
+-  "refresh": "30s",
+-  "schemaVersion": 38,
+-  "tags": ["moment", "mlops", "pipeline"],
+-  "templating": { "list": [] },
+-  "time": { "from": "now-3h", "to": "now" },
+-  "timepicker": {},
+-  "timezone": "browser",
+-  "title": "MOMENT ML Pipeline Dashboard",
+-  "uid": "moment-pipeline-v1",
+-  "version": 1
+-}
+\ No newline at end of file
+diff --git a/monitoring/grafana/provisioning/dashboards/dashboard.yml b/monitoring/grafana/provisioning/dashboards/dashboard.yml
+deleted file mode 100644
+index f264137..0000000
+--- a/monitoring/grafana/provisioning/dashboards/dashboard.yml
++++ /dev/null
+@@ -1,11 +0,0 @@
+-apiVersion: 1
+-
+-providers:
+-  - name: "Moment Dashboards"
+-    orgId: 1
+-    folder: "Moment"
+-    type: file
+-    disableDeletion: false
+-    editable: true
+-    options:
+-      path: /var/lib/grafana/dashboards
+\ No newline at end of file
+diff --git a/monitoring/grafana/provisioning/datasources/prometheus.yml b/monitoring/grafana/provisioning/datasources/prometheus.yml
+deleted file mode 100644
+index 7698749..0000000
+--- a/monitoring/grafana/provisioning/datasources/prometheus.yml
++++ /dev/null
+@@ -1,15 +0,0 @@
+-apiVersion: 1
+-
+-datasources:
+-  # ── Google Cloud Monitoring ───────────────────────────────────────────────
+-  # All MOMENT custom metrics live under custom.googleapis.com/moment/*
+-  # Grafana uses the grafana-googlecloud-datasource plugin (installed via
+-  # GF_INSTALL_PLUGINS env var in docker-compose / Cloud Run Grafana service).
+-  # Auth is handled automatically via ADC / the attached service account.
+-  - name: Google Cloud Monitoring
+-    type: grafana-googlecloud-datasource
+-    access: proxy
+-    isDefault: true
+-    jsonData:
+-      authenticationType: gce          # uses ADC on Cloud Run; service account locally
+-      defaultProject: moment-486719
+\ No newline at end of file
+diff --git a/monitoring/setup_alerts.py b/monitoring/setup_alerts.py
+deleted file mode 100644
+index c6d5ce2..0000000
+--- a/monitoring/setup_alerts.py
++++ /dev/null
+@@ -1,235 +0,0 @@
+-#!/usr/bin/env python3
+-"""
+-monitoring/setup_alerts.py — Create Cloud Monitoring alert policies for MOMENT.
+-
+-Run once after deploying moment-api to Cloud Run:
+-
+-    pip install google-cloud-monitoring
+-    export GOOGLE_CLOUD_PROJECT=moment-486719
+-    export ALERTING_EMAIL=your@email.com
+-    export MOMENT_API_URL=https://YOUR-CLOUD-RUN-URL.run.app
+-    python monitoring/setup_alerts.py
+-
+-What this creates:
+-  1. Email notification channel   → alerts stakeholders
+-  2. Webhook notification channel → POSTs to /admin/retrain-trigger on Cloud Run
+-  3. Alert policies (thresholds matching the original Prometheus rules):
+-     - CompatConfidenceLow        → confidence < 0.40 for 15 min
+-     - CompatConfidenceCritical   → confidence < 0.30 for 10 min  (triggers retraining)
+-     - ValidMomentRatioCritical   → valid_ratio  < 0.30 for 10 min (triggers retraining)
+-     - ValidMomentRatioLow        → valid_ratio  < 0.50 for 15 min
+-     - GeminiErrorRateHigh        → gemini_errors > 5 total in 15 min
+-     - BTModelColdStart           → bt_blend_weight < 0.05 for 30 min
+-     - PipelineRunFailed          → pipeline_runs{status=error} > 0 in 30 min
+-"""
+-
+-import os
+-import sys
+-from google.cloud import monitoring_v3
+-from google.protobuf.duration_pb2 import Duration
+-
+-PROJECT_ID   = os.environ.get("GOOGLE_CLOUD_PROJECT", "moment-486719")
+-ALERT_EMAIL  = os.environ.get("ALERTING_EMAIL", "")
+-RETRAIN_URL  = os.environ.get("MOMENT_API_URL", "https://YOUR-CLOUD-RUN-URL.run.app")
+-
+-project_name = f"projects/{PROJECT_ID}"
+-nc_client    = monitoring_v3.NotificationChannelServiceClient()
+-ap_client    = monitoring_v3.AlertPolicyServiceClient()
+-
+-
+-# ── Step 1: Create notification channels ─────────────────────────────────────
+-
+-def create_email_channel(email: str) -> str:
+-    """Create an email notification channel. Returns channel name."""
+-    channel = monitoring_v3.NotificationChannel(
+-        type_="email",
+-        display_name="MOMENT Alerts — Email",
+-        labels={"email_address": email},
+-    )
+-    result = nc_client.create_notification_channel(
+-        name=project_name, notification_channel=channel
+-    )
+-    print(f"  Created email channel: {result.name}")
+-    return result.name
+-
+-
+-def create_webhook_channel(url: str) -> str:
+-    """Create a webhook notification channel pointing at /admin/retrain-trigger."""
+-    channel = monitoring_v3.NotificationChannel(
+-        type_="webhook_basicauth",
+-        display_name="MOMENT Retraining Webhook",
+-        labels={"url": f"{url}/admin/retrain-trigger"},
+-    )
+-    result = nc_client.create_notification_channel(
+-        name=project_name, notification_channel=channel
+-    )
+-    print(f"  Created webhook channel: {result.name}")
+-    return result.name
+-
+-
+-# ── Step 2: Alert policy builder ─────────────────────────────────────────────
+-
+-def _duration(seconds: int) -> Duration:
+-    d = Duration()
+-    d.seconds = seconds
+-    return d
+-
+-
+-def create_threshold_policy(
+-    display_name: str,
+-    metric_name: str,                # e.g. "compat_confidence_gauge"
+-    threshold: float,
+-    comparison: str,                 # "COMPARISON_LT" or "COMPARISON_GT"
+-    duration_seconds: int,
+-    notification_channels: list[str],
+-    severity: str = "WARNING",       # WARNING | CRITICAL
+-    extra_filter: str = "",
+-) -> str:
+-    """Create a simple threshold alert policy. Returns policy name."""
+-    metric_type = f"custom.googleapis.com/moment/{metric_name}"
+-    filter_str  = f'metric.type="{metric_type}" resource.type="global"'
+-    if extra_filter:
+-        filter_str += f' {extra_filter}'
+-
+-    condition = monitoring_v3.AlertPolicy.Condition(
+-        display_name=display_name,
+-        condition_threshold=monitoring_v3.AlertPolicy.Condition.MetricThreshold(
+-            filter=filter_str,
+-            comparison=monitoring_v3.ComparisonType[comparison],
+-            threshold_value=threshold,
+-            duration=_duration(duration_seconds),
+-            aggregations=[
+-                monitoring_v3.Aggregation(
+-                    alignment_period=_duration(300),   # 5-minute windows
+-                    per_series_aligner=monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+-                    cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MEAN,
+-                )
+-            ],
+-        ),
+-    )
+-
+-    policy = monitoring_v3.AlertPolicy(
+-        display_name=display_name,
+-        conditions=[condition],
+-        combiner=monitoring_v3.AlertPolicy.ConditionCombinerType.OR,
+-        notification_channels=notification_channels,
+-        alert_strategy=monitoring_v3.AlertPolicy.AlertStrategy(
+-            notification_rate_limit=monitoring_v3.AlertPolicy.AlertStrategy.NotificationRateLimit(
+-                period=_duration(3600)   # at most one notification per hour
+-            )
+-        ),
+-        user_labels={"severity": severity.lower(), "project": "moment"},
+-    )
+-
+-    result = ap_client.create_alert_policy(name=project_name, alert_policy=policy)
+-    print(f"  Created policy: {result.display_name}  →  {result.name}")
+-    return result.name
+-
+-
+-# ── Main ─────────────────────────────────────────────────────────────────────
+-
+-def main():
+-    print(f"\nSetting up Cloud Monitoring alerts for project: {PROJECT_ID}\n")
+-
+-    # ── Notification channels ─────────────────────────────────────────────────
+-    channels_all      = []   # email only
+-    channels_retrain  = []   # email + webhook (triggers retraining)
+-
+-    if ALERT_EMAIL:
+-        print("Creating notification channels...")
+-        email_ch   = create_email_channel(ALERT_EMAIL)
+-        webhook_ch = create_webhook_channel(RETRAIN_URL)
+-        channels_all     = [email_ch]
+-        channels_retrain = [email_ch, webhook_ch]
+-    else:
+-        print("ALERTING_EMAIL not set — policies will have no notification channels.")
+-        print("Set the env var and rerun, or add channels manually in GCP Console.\n")
+-
+-    # ── Alert policies ────────────────────────────────────────────────────────
+-    print("\nCreating alert policies...")
+-
+-    # Model decay — confidence dropping
+-    create_threshold_policy(
+-        display_name="CompatConfidenceLow — model decay warning",
+-        metric_name="compat_confidence_gauge",
+-        threshold=0.40,
+-        comparison="COMPARISON_LT",
+-        duration_seconds=900,   # 15 minutes
+-        notification_channels=channels_all,
+-        severity="WARNING",
+-    )
+-
+-    create_threshold_policy(
+-        display_name="CompatConfidenceCritical — retraining triggered",
+-        metric_name="compat_confidence_gauge",
+-        threshold=0.30,
+-        comparison="COMPARISON_LT",
+-        duration_seconds=600,   # 10 minutes
+-        notification_channels=channels_retrain,
+-        severity="CRITICAL",
+-    )
+-
+-    # Data drift — valid moment ratio
+-    create_threshold_policy(
+-        display_name="ValidMomentRatioLow — input quality warning",
+-        metric_name="valid_ratio",
+-        threshold=0.50,
+-        comparison="COMPARISON_LT",
+-        duration_seconds=900,
+-        notification_channels=channels_all,
+-        severity="WARNING",
+-    )
+-
+-    create_threshold_policy(
+-        display_name="ValidMomentRatioCritical — retraining triggered",
+-        metric_name="valid_ratio",
+-        threshold=0.30,
+-        comparison="COMPARISON_LT",
+-        duration_seconds=600,
+-        notification_channels=channels_retrain,
+-        severity="CRITICAL",
+-    )
+-
+-    # Gemini API reliability
+-    create_threshold_policy(
+-        display_name="GeminiErrorRateHigh — API reliability issue",
+-        metric_name="gemini_errors_total",
+-        threshold=5.0,
+-        comparison="COMPARISON_GT",
+-        duration_seconds=900,
+-        notification_channels=channels_all,
+-        severity="WARNING",
+-    )
+-
+-    # Bradley-Terry cold start
+-    create_threshold_policy(
+-        display_name="BTModelColdStart — insufficient feedback data",
+-        metric_name="bt_blend_weight_bt",
+-        threshold=0.05,
+-        comparison="COMPARISON_LT",
+-        duration_seconds=1800,  # 30 minutes
+-        notification_channels=channels_all,
+-        severity="WARNING",
+-    )
+-
+-    # Pipeline failures
+-    create_threshold_policy(
+-        display_name="PipelineRunFailed — pipeline error detected",
+-        metric_name="pipeline_runs_total",
+-        threshold=0.0,
+-        comparison="COMPARISON_GT",
+-        duration_seconds=1800,
+-        notification_channels=channels_all,
+-        severity="WARNING",
+-        extra_filter='metric.label.status="error"',
+-    )
+-
+-    print("\nDone. View policies at:")
+-    print(f"  https://console.cloud.google.com/monitoring/alerting?project={PROJECT_ID}\n")
+-
+-
+-if __name__ == "__main__":
+-    if not os.environ.get("GOOGLE_CLOUD_PROJECT"):
+-        print("ERROR: GOOGLE_CLOUD_PROJECT env var is required.")
+-        sys.exit(1)
+-    main()
+\ No newline at end of file

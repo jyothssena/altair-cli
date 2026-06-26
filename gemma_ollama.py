@@ -81,6 +81,7 @@ Here is the git diff:
 
 def chat_with_file(file_path: str) -> str:
     diff_content = open(file_path).read()
+    diff_content = diff_content[:4000]  # add this line
     prompt = DIFF_SYSTEM_PROMPT.format(diff_content=diff_content)
     return chat(prompt)
 
