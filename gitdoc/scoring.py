@@ -38,9 +38,17 @@ def score_commit(text: str) -> tuple:
 def score_changelog(text: str) -> tuple:
     if not text or not text.strip():
         return 0, "FAILED", C.RED
-    has_header = "## [Unreleased]" in text
-    has_category = any(f"### {c}" in text for c in ("Added", "Changed", "Fixed", "Removed", "Performance"))
-    has_entry = "- " in text
+
+    # Strip markdown fences
+    clean = text.strip()
+    if clean.startswith(" ⁠"):
+        lines = clean.split("\n")
+        clean = "\n".join(l for l in lines if not l.startswith("⁠ "))
+
+    has_header = "## [Unreleased]" in clean
+    has_category = any(f"### {c}" in clean for c in ("Added", "Changed", "Fixed", "Removed", "Performance"))
+    has_entry = bool(re.search(r"^- .+", clean, re.MULTILINE))
+
     if has_header and has_category and has_entry:
         return 10, "HIGH", C.GREEN
     if has_category and has_entry:
@@ -48,6 +56,7 @@ def score_changelog(text: str) -> tuple:
     if has_entry:
         return 4, "LOW", C.RED
     return 1, "FAILED", C.RED
+
 
 
 def score_review(text: str) -> tuple:
