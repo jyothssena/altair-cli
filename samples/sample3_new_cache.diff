@@ -1,0 +1,56 @@
+diff --git a/utils/cache.py b/utils/cache.py
+new file mode 100644
+index 0000000..a1b2c3d
+--- /dev/null
++++ b/utils/cache.py
+@@ -0,0 +1,48 @@
++"""
++Simple in-memory LRU cache with TTL support.
++"""
++
++import time
++from collections import OrderedDict
++from threading import Lock
++
++
++class TTLCache:
++    """Thread-safe LRU cache with per-entry time-to-live."""
++
++    def __init__(self, maxsize: int = 128, ttl: float = 300.0):
++        self._maxsize = maxsize
++        self._ttl = ttl
++        self._cache: OrderedDict = OrderedDict()
++        self._timestamps: dict = {}
++        self._lock = Lock()
++
++    def get(self, key: str, default=None):
++        with self._lock:
++            if key not in self._cache:
++                return default
++            if self._is_expired(key):
++                self._evict(key)
++                return default
++            self._cache.move_to_end(key)
++            return self._cache[key]
++
++    def set(self, key: str, value) -> None:
++        with self._lock:
++            if key in self._cache:
++                self._cache.move_to_end(key)
++            self._cache[key] = value
++            self._timestamps[key] = time.monotonic()
++            if len(self._cache) > self._maxsize:
++                oldest = next(iter(self._cache))
++                self._evict(oldest)
++
++    def _is_expired(self, key: str) -> bool:
++        return (time.monotonic() - self._timestamps.get(key, 0)) > self._ttl
++
++    def _evict(self, key: str) -> None:
++        self._cache.pop(key, None)
++        self._timestamps.pop(key, None)
++
++    def clear(self) -> None:
++        with self._lock:
++            self._cache.clear()
++            self._timestamps.clear()
