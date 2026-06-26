@@ -92,6 +92,7 @@ def main():
     diff_text = read_diff(args.input)
     meta = analyze_diff(diff_text)
     metadata_ctx = format_metadata_context(meta)
+    chunks = chunk_diff(diff_text)
 
     if args.verbose and not args.json:
         print(f"\n{C.DIM}[DEBUG] Metadata context:{C.RESET}")
